@@ -21,7 +21,7 @@ name: PR assistant
 
 on:
   workflow_run: # zizmor: ignore[dangerous-triggers] -- reviewed: never runs PR code
-    workflows: [CI, Security, zizmor, Apply pull request labels, Review noted]
+    workflows: [CI, Security, zizmor, Label pull requests, Apply pull request labels, Review noted]
     types: [completed]
   pull_request_target: # zizmor: ignore[dangerous-triggers] -- reviewed: never runs PR code
     types: [opened, reopened, ready_for_review, synchronize, edited, closed]
