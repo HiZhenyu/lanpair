@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from lanpair import EnvelopeError, Identity, Opener, Sealer
+from lanpair import EnvelopeError, Identity, JsonFileSeqStore, Opener, Sealer
 
 
 class Clock:
@@ -20,6 +20,7 @@ def setup():
     sealer = Sealer(desk, clock=clock)
     opener = Opener(room3.public, clock=clock)
     opener.add_peer(desk.public)
+    clock.t += 31  # past the start-up window of the in-memory store
     return clock, desk, room3, room4, sealer, opener
 
 
@@ -85,3 +86,72 @@ def test_seed_roundtrip_and_repr():
     ident = Identity.generate()
     assert Identity.from_seed(ident.seed()).public == ident.public
     assert ident.seed().hex() not in repr(ident)
+
+
+def test_sender_restart_keeps_working(setup):
+    clock, desk, room3, _, sealer, opener = setup
+    opener.open(sealer.seal(room3.public, {}))
+    clock.t += 1
+    restarted = Sealer(desk, clock=clock)
+    opener.open(restarted.seal(room3.public, {}))
+
+
+def test_memory_store_rejects_replay_after_receiver_restart(setup):
+    clock, desk, room3, _, sealer, _ = setup
+    raw = sealer.seal(room3.public, {"type": "close"})
+    clock.t += 1
+    restarted = Opener(room3.public, clock=clock)
+    restarted.add_peer(desk.public)
+    with pytest.raises(EnvelopeError, match="before this receiver started"):
+        restarted.open(raw)
+    clock.t += 31
+    restarted.open(sealer.seal(room3.public, {}))
+
+
+def test_file_store_rejects_replay_after_receiver_restart(setup, tmp_path):
+    clock, desk, room3, _, sealer, _ = setup
+    path = tmp_path / "seq.json"
+    first = Opener(room3.public, clock=clock, store=JsonFileSeqStore(path))
+    first.add_peer(desk.public)
+    raw = sealer.seal(room3.public, {"type": "close"})
+    first.open(raw)
+    restarted = Opener(room3.public, clock=clock, store=JsonFileSeqStore(path))
+    restarted.add_peer(desk.public)
+    with pytest.raises(EnvelopeError, match="replayed"):
+        restarted.open(raw)
+    restarted.open(sealer.seal(room3.public, {}))  # no start-up window with a file store
+
+
+def test_file_store_rejects_bad_file(tmp_path):
+    path = tmp_path / "seq.json"
+    path.write_text('{"a": "1"}')
+    with pytest.raises(ValueError):
+        JsonFileSeqStore(path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"from": ["x"]},
+        {"to": 1},
+        {"seq": True},
+        {"seq": 1.5},
+        {"ts": "now"},
+    ],
+)
+def test_wrong_types_rejected(setup, change):
+    _, _, room3, _, sealer, opener = setup
+    msg = json.loads(sealer.seal(room3.public, {}))
+    msg.update(change)
+    with pytest.raises(EnvelopeError, match="malformed"):
+        opener.open(json.dumps(msg).encode())
+
+
+@pytest.mark.parametrize("bad", [b"NaN", b"Infinity", b"-Infinity"])
+def test_non_finite_timestamp_rejected(setup, bad):
+    _, _, room3, _, sealer, opener = setup
+    raw = sealer.seal(room3.public, {})
+    msg = json.loads(raw)
+    raw = raw.replace(json.dumps(msg["ts"]).encode(), bad)
+    with pytest.raises(EnvelopeError, match="malformed"):
+        opener.open(raw)

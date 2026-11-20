@@ -32,14 +32,17 @@ were meant for it, and are not replays.
    Receivers drop anything with an unknown sender, bad signature, wrong recipient,
    timestamp outside ±30 s, or non-increasing sequence number. Rejected messages never
    reach application code.
+   - *Restarts.* Sender sequence numbers start at the current time in microseconds, so
+     they keep increasing across restarts with nothing stored. The receiver keeps the last
+     accepted number per peer in a `SeqStore`: `JsonFileSeqStore` survives restarts; with
+     the default in-memory store the receiver refuses anything stamped earlier than
+     30 s after it started, so messages recorded before a restart cannot be replayed.
 5. **Confidentiality (planned).** Signatures prove origin but do not hide content. v1
    will add an encrypted channel (Noise `XX`/`IK` with the pinned Ed25519/X25519 keys,
    or mutual TLS with pinned certificates) so message bodies are not readable on the LAN.
 
 ## Open questions
 
-- Sequence numbers must survive restarts (persist last-seen seq, or add a per-session
-  random nonce to the signed fields).
 - Mobile clients: a small web page or app speaking the same protocol.
 - External security review before 1.0.
 
@@ -48,6 +51,7 @@ were meant for it, and are not replays.
 | Piece | State |
 |---|---|
 | Identity + signed envelopes | done, tested |
+| Replay protection across restarts | done, tested |
 | Key storage via OS key store | todo |
 | mDNS discovery | todo (port from YTKTV) |
 | QR pairing | todo |

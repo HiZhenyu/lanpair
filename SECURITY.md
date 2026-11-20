@@ -43,6 +43,4 @@ screens during pairing. Especially welcome:
 
 - **Message bodies are signed, not encrypted yet**: anyone on the network can read them. An
   encrypted channel is on the roadmap.
-- **Replay protection does not survive a restart yet** (the last sequence number is kept in
-  memory).
 - **No external security review yet.** One is planned before 1.0.
