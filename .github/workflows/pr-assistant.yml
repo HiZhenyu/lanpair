@@ -1,0 +1,545 @@
+# Like winget-pkgs' policy bot, on every pull request:
+# - a status comment: which checks passed or failed, what a failure usually means, the
+#   labels, and what happens next. When the status changes, the old comment is removed and
+#   a new one posted, so it is the latest comment; otherwise it is edited in place.
+# - status labels (Checks-Running, Checks-Passed, Checks-Failed, Internal-Error,
+#   Needs-Author-Action, Needs-Review, Maintainer-Approved, Needs-Terms-Agreement).
+# - merge conflicts: label Merge-Conflict (and Needs-Author-Action) with how to fix it;
+#   checked on every update, and for all open pull requests after each push to main.
+# - contribution terms, like a CLA bot: the terms are posted as a comment, the author replies
+#   "I agree to the lanpair contribution terms", and a "Contribution terms" check turns green
+#   (labels Needs-Terms-Agreement / Terms-Agreed). Agreeing once covers later pull requests.
+# - a thank-you comment when any pull request is merged.
+# - a "lanpair checks" status that is green only when every check passed and the terms are
+#   agreed (the one check the ruleset requires), and, once the maintainer approves, GitHub's
+#   auto-merge, so an approved pull request merges by itself when that turns green.
+# It acts as TonyD365-Agent (secret AGENT_TOKEN), so its merges start the workflows on main;
+# its own comments do not start it again. It runs from main (pull_request_target, and
+# workflow_run after the other workflows and after reviews), never runs the pull request's
+# code, and so works for forks too.
+name: PR assistant
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] -- reviewed: never runs PR code
+    workflows: [CI, Security, zizmor, Apply pull request labels, Review noted]
+    types: [completed]
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- reviewed: never runs PR code
+    types: [opened, reopened, ready_for_review, synchronize, edited, closed]
+  issue_comment: # zizmor: ignore[dangerous-triggers] -- reviewed: never runs PR code
+    types: [created, edited]
+  push:
+    branches: [main] # a merge can leave other pull requests in conflict
+  # A review on a first-time contributor's fork pull request starts "Review noted" only after
+  # a maintainer approves the run, so every 10 minutes recent reviews on fork pull requests are
+  # picked up here instead (see the reviews job), and the assistant runs for them by number.
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Pull request number
+        required: true
+
+permissions: {}
+
+jobs:
+  reviews:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Run the assistant for fork pull requests reviewed in the last 15 minutes
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          for n in $(gh pr list --state open --limit 100 --json number,isCrossRepository \
+              -q '.[] | select(.isCrossRepository) | .number'); do
+            last=$(gh api "repos/$GH_REPO/pulls/$n/reviews" --paginate \
+              -q '[.[] | .submitted_at // empty] | max // ""')
+            if [ -n "$last" ] && [[ "$last" > "$since" ]]; then
+              echo "pull request $n: reviewed at $last"
+              gh workflow run pr-assistant.yml --ref main -f number="$n"
+            fi
+          done
+
+  comment:
+    concurrency:
+      group: pr-assistant-${{ github.event.pull_request.number || github.event.issue.number || inputs.number || github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    if: >-
+      github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        github.event.comment.user.login != 'TonyD365-Agent' &&
+        github.event.comment.user.login != 'github-actions[bot]') ||
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - name: Write the status comment
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          # Which pull request (workflow_run gives the commit; forks are found by it too).
+          if [ -z "$NUMBER" ]; then
+            NUMBER=$(gh pr list --state open --search "$SHA" --json number,headRefOid \
+              -q ".[] | select(.headRefOid == \"$SHA\") | .number" | head -n 1)
+          fi
+          [ -n "$NUMBER" ] || { echo "no open pull request for $SHA"; exit 0; }
+          pr=$(gh pr view "$NUMBER" --json headRefOid,author,labels,isDraft,reviewDecision,state,body,mergeable)
+          # GitHub works out "mergeable" lazily: ask again while it says UNKNOWN.
+          for _ in 1 2 3 4 5; do
+            [ "$(jq -r .mergeable <<<"$pr")" != UNKNOWN ] && break
+            sleep 4
+            pr=$(gh pr view "$NUMBER" --json headRefOid,author,labels,isDraft,reviewDecision,state,body,mergeable)
+          done
+          conflict=""; [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ] && conflict=1
+          [ "$(jq -r .state <<<"$pr")" = OPEN ] || exit 0
+          head=$(jq -r .headRefOid <<<"$pr")
+          author=$(jq -r .author.login <<<"$pr")
+
+          # Every check on the latest commit.
+          # Only the latest run of each check (a re-run replaces the earlier result), not this job.
+          gh api "repos/$GH_REPO/commits/$head/check-runs?per_page=100" \
+            -q '[.check_runs[] | select(.name != "comment")] | group_by(.name) | map(max_by(.started_at // ""))[]
+                | [.name, .status, (.conclusion // ""), .html_url] | @tsv' > checks.tsv || true
+          total=$(wc -l < checks.tsv | tr -d ' ')
+          # Cancelled is not the change's fault: it counts as an internal error, not a failure.
+          failed=$(awk -F'\t' '$3=="failure"||$3=="timed_out"' checks.tsv | wc -l | tr -d ' ')
+          running=$(awk -F'\t' '$2!="completed"' checks.tsv | wc -l | tr -d ' ')
+          # A job just re-run can be missing from the check list for a few seconds; a workflow run
+          # for this commit that hasn't finished still counts as running (only pull_request ones:
+          # the bot's own workflows run on other events).
+          busy=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$head&event=pull_request&per_page=100" \
+            -q '[.workflow_runs[] | select(.status != "completed")] | length' || echo 0)
+          if [ "$running" = 0 ] && [ "${busy:-0}" != 0 ]; then running=$busy; fi
+
+          hint() {  # what a failed check usually means, and what to do
+            case "$1" in
+              *"Lint and type-check"*) echo "Run \`ruff check .\`, \`ruff format .\` and \`mypy src\`, then push the fixes." ;;
+              Tests*) echo "A test failed: open the log, then run \`pytest\` locally." ;;
+              *"Dependency audit"*) echo "A dependency has a known vulnerability: raise it to the fixed version (the log names it)." ;;
+              *zizmor*) echo "A workflow file has a security problem: see the annotation on the Files tab." ;;
+              CodeQL*) echo "Code scanning found a possible security problem in the changed code: see the annotation on the PR's Files tab." ;;
+              *) echo "Open the log for details." ;;
+            esac
+          }
+
+          # Contribution terms (maintainer and bots excepted): agreed when the author has written
+          # the sentence in a comment on this pull request or on any earlier one of theirs here.
+          PHRASE="I agree to the lanpair contribution terms"
+          # By the account's number, which stays when a login is renamed (entries from before
+          # numbers were recorded are matched by login).
+          author_id=$(gh api "repos/$GH_REPO/pulls/$NUMBER" -q .user.id)
+          # The record: an issue labelled terms-ledger, one bot comment per agreement or
+          # withdrawal; the latest one for a person decides (see the terms job below).
+          ledger=$(gh issue list --state all --label terms-ledger --json number -q '.[0].number')
+          terms_state() {
+            [ -n "$ledger" ] || { echo none; return; }
+            gh api --paginate "repos/$GH_REPO/issues/$ledger/comments?per_page=100" \
+              -q ".[] | select(.user.login == \"$ME\") | .body | split(\"\n\")[0]" |
+              sed -n -e "s/^<!-- terms:\(agreed\|declined\):id=$author_id:.* -->$/\1/p" \
+                     -e "s/^<!-- terms:\(agreed\|declined\):$author -->$/\1/p" | tail -n 1 | grep . || echo none
+          }
+          ME=$(gh api user -q .login 2>/dev/null || echo "github-actions[bot]")
+          case "$author" in
+            TonyD365|TonyD365-Agent|dependabot\[bot\]|github-actions\[bot\]|app/dependabot) terms=exempt ;;
+            *) case "$(terms_state)" in agreed) terms=yes ;; declined) terms=no; declined=1 ;; *) terms=no ;; esac ;;
+          esac
+          posted=$(gh api "repos/$GH_REPO/issues/$NUMBER/comments?per_page=100" \
+            -q '[.[] | select(.body | startswith("<!-- lanpair-terms")) | .body | split("\n")[0]] | join(" ")')
+          if [ "$terms" = no ] && [[ "$posted" != *"lanpair-terms-ask"* ]]; then
+            {
+              echo "<!-- lanpair-terms-ask -->"
+              echo "### 📝 Contribution terms"
+              echo
+              echo "Thank you for your contribution, @$author! Before it can be merged, please read the terms below and reply to agree."
+              echo
+              curl -fsSL "https://raw.githubusercontent.com/$GH_REPO/main/CONTRIBUTING.md" |
+                awk '/^## Contribution terms/{on=1; next} /^## /{on=0} on' |
+                awk '/^On your first pull request/{skip=1} skip&&/^you agree that:/{skip=0; next} !skip' |
+                sed -E "s#\]\(([A-Za-z_]+(\.md)?)\)#](${SERVER}/${GH_REPO}/blob/main/\1)#g"  # links work in a comment
+              echo
+              echo "---"
+              echo
+              echo "**If you agree, reply to this pull request with a comment that says exactly:**"
+              echo
+              echo '```'
+              echo "$PHRASE"
+              echo '```'
+              echo
+              echo "Agreeing once covers your later pull requests to lanpair too, until you withdraw it by replying \`I do not agree to the lanpair contribution terms\`. If you do not agree, the pull request cannot be merged."
+            } > terms.md
+            gh pr comment "$NUMBER" --body-file terms.md
+          fi
+          if [ "$terms" = no ]; then state=failure; desc="Reply: $PHRASE"; else state=success; desc="Agreed"; [ "$terms" = exempt ] && desc="Not needed for the maintainer"; fi
+          gh api -X POST "repos/$GH_REPO/statuses/$head" -f state="$state" -f context="Contribution terms" \
+            -f description="$desc" -f target_url="$SERVER/$GH_REPO/blob/main/CONTRIBUTING.md#contribution-terms" >/dev/null
+
+          internal=$(awk -F'\t' '$3=="cancelled"||$3=="startup_failure"||$3=="stale"' checks.tsv | wc -l | tr -d ' ')
+          review=$(jq -r .reviewDecision <<<"$pr")
+          # The latest review asking for changes, to point to it.
+          if [ "$review" = CHANGES_REQUESTED ]; then
+            asked=$(gh api "repos/$GH_REPO/pulls/$NUMBER/reviews?per_page=100" \
+              -q '[.[] | select(.state == "CHANGES_REQUESTED")] | last | "\(.user.login)\t\(.html_url)"')
+            asked_by=${asked%%$'\t'*}; asked_url=${asked#*$'\t'}
+          fi
+
+          # Status labels: exactly the ones that fit now.
+          want=()
+          if [ "$total" = 0 ] || [ "$running" != 0 ]; then want+=(Checks-Running); fi
+          [ "$failed" != 0 ] && want+=(Checks-Failed)
+          [ "$internal" != 0 ] && want+=(Internal-Error)
+          [ "$total" != 0 ] && [ "$running" = 0 ] && [ "$failed" = 0 ] && want+=(Checks-Passed)
+          if [ "$failed" != 0 ] || [ "$terms" = no ] || [ "$review" = CHANGES_REQUESTED ] || [ -n "$conflict" ]; then want+=(Needs-Author-Action); fi
+          [ -n "$conflict" ] && want+=(Merge-Conflict)
+          [ "$review" = CHANGES_REQUESTED ] && want+=(Changes-Requested)
+          [ "$terms" = no ] && want+=(Needs-Terms-Agreement)
+          [ "$terms" = yes ] && want+=(Terms-Agreed)
+          [ -n "${declined:-}" ] && want+=(Terms-Declined)
+          if [ "$review" = APPROVED ]; then want+=(Maintainer-Approved); else want+=(Needs-Review); fi
+          declare -A colours=([Checks-Running]=c5def5 [Checks-Passed]=0e8a16 [Checks-Failed]=d73a4a
+            [Internal-Error]=e99695 [Needs-Author-Action]=b60205 [Needs-Review]=fbca04
+            [Maintainer-Approved]=1d7a3b [Needs-Terms-Agreement]=5319e7 [Terms-Agreed]=c2e0c6 [Terms-Declined]=000000 [Merge-Conflict]=d93f0b [Changes-Requested]=e4e669)
+          have=$(jq -r '.labels[].name' <<<"$pr")
+          for label in "${!colours[@]}"; do
+            if printf '%s\n' "${want[@]}" | grep -qx "$label"; then
+              printf '%s\n' "$have" | grep -qx "$label" && continue
+              gh label create "$label" --color "${colours[$label]}" 2>/dev/null || true
+              gh api -X POST "repos/$GH_REPO/issues/$NUMBER/labels" -f "labels[]=$label" >/dev/null || true
+            elif printf '%s\n' "$have" | grep -qx "$label"; then
+              gh api -X DELETE "repos/$GH_REPO/issues/$NUMBER/labels/$label" >/dev/null 2>&1 || true
+            fi
+          done
+
+          # One status for the ruleset to require, and auto-merge once approved.
+          if [ "$total" = 0 ] || [ "$running" != 0 ]; then agg=pending; aggdesc="Checks are running"
+          elif [ "$failed" != 0 ]; then agg=failure; aggdesc="$failed check(s) failed"
+          elif [ "$internal" != 0 ]; then agg=failure; aggdesc="$internal check(s) cancelled: comment /retest"
+          elif [ "$terms" = no ]; then agg=failure; aggdesc="Contribution terms not agreed yet"
+          else agg=success; aggdesc="Every check passed"; fi
+          [ "$agg" = pending ] && [ "$terms" = no ] && aggdesc="Checks are running; terms not agreed yet"
+          gh api -X POST "repos/$GH_REPO/statuses/$head" -f state="$agg" -f context="lanpair checks" \
+            -f description="$aggdesc" -f target_url="$SERVER/$GH_REPO/pull/$NUMBER" >/dev/null
+          if [ "$review" = APPROVED ] && [ "$(jq -r .isDraft <<<"$pr")" != true ]; then
+            gh pr merge "$NUMBER" --auto --merge >/dev/null 2>&1 || echo "auto-merge not enabled (is 'Allow auto-merge' on?)"
+          else
+            gh pr merge "$NUMBER" --disable-auto >/dev/null 2>&1 || true
+          fi
+
+          # The kind of status: a new kind is posted as a new comment (see the end).
+          if [ "$review" = CHANGES_REQUESTED ]; then kind=changes
+          elif [ -n "$conflict" ]; then kind=conflict
+          elif [ "$terms" = no ]; then kind=terms
+          elif [ "$total" = 0 ] || [ "$running" != 0 ] && [ "$failed" = 0 ]; then kind=running
+          elif [ "$failed" != 0 ]; then kind=failed
+          elif [ "$internal" != 0 ]; then kind=internal
+          else kind="passed-$review"; fi
+          {
+            echo "<!-- lanpair-pr-assistant kind=$kind -->"
+            if [ "$review" = CHANGES_REQUESTED ]; then
+              echo "### ✋ Changes requested"
+            elif [ "$total" = 0 ]; then
+              echo "### ⏳ Checks are starting"
+            elif [ "$failed" != 0 ]; then
+              echo "### ❌ $failed of $total checks failed"
+            elif [ "$running" != 0 ]; then
+              echo "### ⏳ $running of $total checks still running"
+            elif [ "$internal" != 0 ]; then
+              echo "### ⚠️ $internal of $total checks were cancelled"
+            else
+              echo "### ✅ All $total checks passed"
+            fi
+            echo
+            echo "Hi @$author, I keep this comment up to date with the state of this pull request."
+            if [ "$review" = CHANGES_REQUESTED ]; then
+              echo
+              echo "**The maintainer (\`${asked_by:-maintainer}\`) asked for changes before this can be merged.** Please read [the review](${asked_url:-$SERVER/$GH_REPO/pull/$NUMBER/files}), make the changes and push them; the review is then looked at again. Auto-merge stays off until it is approved."
+            fi
+            if [ "$failed" != 0 ]; then
+              echo
+              echo "**What failed, and what it usually means**"
+              echo
+              awk -F'\t' '$3=="failure"||$3=="timed_out"' checks.tsv |
+                while IFS=$'\t' read -r name _status _conclusion url; do
+                  echo "- [$name]($url): $(hint "$name")"
+                done
+            fi
+            if [ "$running" != 0 ]; then
+              echo
+              echo "**Still running** (queued ones are waiting for a GitHub runner; GitHub's checks list can hide them when a newer run of the same workflow was skipped)"
+              echo
+              awk -F'\t' '$2!="completed"' checks.tsv |
+                while IFS=$'\t' read -r name status _conclusion url; do
+                  echo "- [$name]($url): ${status/_/ }"
+                done
+            fi
+            if [ -n "$conflict" ]; then
+              echo
+              echo "**Merge conflict:** this pull request and \`main\` change the same lines, so it cannot be merged (auto-merge waits). Bring \`main\` into your branch, fix the conflicting files, and push: \`git fetch origin && git merge origin/main\`, or use **Resolve conflicts** on this page. [How to resolve a merge conflict]($SERVER/docs/pull-requests/collaborating-with-pull-requests/addressing-merge-conflicts/resolving-a-merge-conflict-on-github)"
+            fi
+            if [ "$internal" != 0 ]; then
+              echo
+              echo "**Internal error:** $internal check(s) were cancelled or could not start, which is usually GitHub, not this change. Comment \`/retest\` to run them again."
+            fi
+            if [ "$terms" = no ]; then
+              echo
+              echo "**Contribution terms:** please read the terms in the comment above and, if you agree, reply with a comment that says exactly \`$PHRASE\`. Nothing can be merged before that."
+            fi
+            labels=$(gh pr view "$NUMBER" --json labels -q '[.labels[].name] | join(", ")')
+            if [ -n "$labels" ]; then
+              echo
+              echo "**Labels:** $labels"
+            fi
+            echo
+            echo "**Next**"
+            if [ "$(jq -r .isDraft <<<"$pr")" = true ]; then
+              echo "- This is a draft: mark it ready for review when it is done."
+            elif [ "$review" = CHANGES_REQUESTED ]; then
+              echo "- Make the changes asked for in the review and push them."
+            elif [ -n "$conflict" ]; then
+              echo "- Resolve the merge conflict with \`main\` (see above) and push."
+            elif [ "$terms" = no ]; then
+              echo "- Reply \`$PHRASE\` to agree to the contribution terms (see above)."
+            elif [ "$failed" != 0 ]; then
+              echo "- Fix the failures above and push; the checks run again by themselves."
+            elif [ "$running" != 0 ]; then
+              echo "- Wait for the running checks; this comment updates when they finish."
+            elif [ "$internal" != 0 ]; then
+              echo "- Comment \`/retest\` to run the cancelled checks again."
+            fi
+            case "$review" in
+              APPROVED) echo "- Approved by the maintainer: it merges by itself once every check passes (auto-merge is on)." ;;
+              CHANGES_REQUESTED) echo "- The maintainer asked for changes: see the review." ;;
+              *) echo "- It needs the maintainer's approval before it can be merged." ;;
+            esac
+            echo
+            echo "<sub>[How the checks work](${SERVER}/${GH_REPO}/blob/main/CONTRIBUTING.md#before-you-open-a-pull-request) · updated $(date -u '+%Y-%m-%d %H:%M UTC') for ${head:0:7}</sub>"
+          } > body.md
+
+          # One comment per pull request. A new kind of status is posted as a new
+          # comment, removing the old one, so it is the latest; otherwise it is edited in place.
+          existing=$(gh api "repos/$GH_REPO/issues/$NUMBER/comments?per_page=100" \
+            -q '[.[] | select(.body | startswith("<!-- lanpair-pr-assistant"))] | last | if . then "\(.id)\t\(.user.login)\t\(.body | split("\n")[0])" else "" end')
+          me=$(gh api user -q .login 2>/dev/null || echo "github-actions[bot]")
+          old_id=${existing%%$'\t'*}; rest=${existing#*$'\t'}; old_author=${rest%%$'\t'*}; old_kind=${rest#*$'\t'}
+          # Edited in place only when it is ours and the same kind; otherwise posted anew.
+          if [ -n "$existing" ] && [ "$old_author" = "$me" ] && [ "$old_kind" = "$(head -n 1 body.md)" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$old_id" -F body=@body.md >/dev/null
+          else
+            [ -n "$existing" ] && gh api -X DELETE "repos/$GH_REPO/issues/comments/$old_id" >/dev/null
+            gh pr comment "$NUMBER" --body-file body.md
+          fi
+
+  terms:
+    # Answers "I agree / I do not agree to the lanpair contribution terms" at once: records it
+    # in the ledger issue, replies, and sets the check and labels. (The comment job above
+    # then refreshes the rest of the status.)
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.event.comment.user.login != 'TonyD365-Agent' &&
+      github.event.comment.user.login != 'github-actions[bot]'
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          NUMBER: ${{ github.event.issue.number }}
+          WHO: ${{ github.event.comment.user.login }}
+          WHO_ID: ${{ github.event.comment.user.id }}
+          AUTHOR_ID: ${{ github.event.issue.user.id }}
+          BODY: ${{ github.event.comment.body }}
+          LINK: ${{ github.event.comment.html_url }}
+        run: |
+          set -euo pipefail
+          said=$(printf '%s' "$BODY" | tr -d '\r' | sed "s/’/'/g" | tr '[:upper:]' '[:lower:]' |
+            sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/\.$//')
+          case "$said" in
+            "i agree to the lanpair contribution terms") what=agreed ;;
+            "i do not agree to the lanpair contribution terms"|"i don't agree to the lanpair contribution terms") what=declined ;;
+            *) exit 0 ;;
+          esac
+          [ "$WHO_ID" = "$AUTHOR_ID" ] || { echo "only the pull request's author can answer for it"; exit 0; }
+
+          # The ledger issue, made (and locked, so only the bot writes) the first time.
+          ledger=$(gh issue list --state all --label terms-ledger --json number -q '.[0].number')
+          if [ -z "$ledger" ]; then
+            gh label create terms-ledger --color ededed --description "Record of contribution terms agreements" 2>/dev/null || true
+            printf '%s\n' \
+              "This issue is the record of who agreed to the [contribution terms]($SERVER/$GH_REPO/blob/main/CONTRIBUTING.md#contribution-terms). The bot keeps it; it is closed and locked so it stays out of the way." \
+              "" \
+              "- **To agree**, reply on your pull request: \`I agree to the lanpair contribution terms\`" \
+              "- **To withdraw**, reply on any of your pull requests: \`I do not agree to the lanpair contribution terms\`" \
+              "" \
+              "One entry per answer, newest last. A person's latest entry counts; people are matched by their account number, so a renamed account keeps its agreement." > ledger.md
+            url=$(gh issue create --label terms-ledger --title "Contribution terms: agreements (kept by the bot)" --body-file ledger.md)
+            ledger=${url##*/}
+            gh issue lock "$ledger" --reason resolved >/dev/null 2>&1 || true
+            gh issue close "$ledger" >/dev/null 2>&1 || true
+          fi
+          when=$(date -u '+%Y-%m-%d %H:%M UTC')
+          if [ "$what" = agreed ]; then mark="✅ **Agreed**"; else mark="❌ **Withdrawn**"; fi
+          entry="$mark · \`$WHO\` (account $WHO_ID) · PR #$NUMBER · [their comment]($LINK) · $when"
+          printf '%s\n%s\n' "<!-- terms:$what:id=$WHO_ID:$WHO -->" "$entry" > entry.md
+          gh issue comment "$ledger" --body-file entry.md >/dev/null
+
+          head=$(gh pr view "$NUMBER" --json headRefOid -q .headRefOid)
+          for label in Terms-Agreed Terms-Declined Needs-Terms-Agreement; do
+            gh label create "$label" --color ededed 2>/dev/null || true
+          done
+          if [ "$what" = agreed ]; then
+            gh api -X POST "repos/$GH_REPO/statuses/$head" -f state=success -f context="Contribution terms" -f description="Agreed" >/dev/null
+            gh api -X POST "repos/$GH_REPO/issues/$NUMBER/labels" -f "labels[]=Terms-Agreed" >/dev/null || true
+            gh api -X DELETE "repos/$GH_REPO/issues/$NUMBER/labels/Needs-Terms-Agreement" >/dev/null 2>&1 || true
+            gh api -X DELETE "repos/$GH_REPO/issues/$NUMBER/labels/Terms-Declined" >/dev/null 2>&1 || true
+            printf '%s\n%s\n' "<!-- lanpair-terms-ok -->" "✅ Thank you, @$WHO: your agreement to the contribution terms is recorded. It covers your later pull requests too, until you reply \`I do not agree to the lanpair contribution terms\`." > reply.md
+          else
+            gh api -X POST "repos/$GH_REPO/statuses/$head" -f state=failure -f context="Contribution terms" -f description="Declined" >/dev/null
+            gh api -X POST "repos/$GH_REPO/issues/$NUMBER/labels" -f "labels[]=Terms-Declined" >/dev/null || true
+            gh api -X POST "repos/$GH_REPO/issues/$NUMBER/labels" -f "labels[]=Needs-Terms-Agreement" >/dev/null || true
+            gh api -X DELETE "repos/$GH_REPO/issues/$NUMBER/labels/Terms-Agreed" >/dev/null 2>&1 || true
+            printf '%s\n%s\n' "<!-- lanpair-terms-declined -->" "Noted, @$WHO: you do not agree to the contribution terms, so this pull request cannot be merged. If you change your mind, reply \`I agree to the lanpair contribution terms\`." > reply.md
+          fi
+          gh pr comment "$NUMBER" --body-file reply.md >/dev/null
+
+  conflicts:
+    # After a push to main: label every open pull request that is now in conflict (or no
+    # longer), since nothing else runs for them then. The comment job above explains it.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sleep 20  # let GitHub work out mergeability against the new main
+          gh label create Merge-Conflict --color d93f0b --description "Conflicts with main; resolve and push" 2>/dev/null || true
+          for n in $(gh pr list --state open --json number -q '.[].number'); do
+            state=UNKNOWN
+            for _ in 1 2 3 4 5; do
+              state=$(gh pr view "$n" --json mergeable -q .mergeable)
+              [ "$state" != UNKNOWN ] && break
+              sleep 5
+            done
+            labelled=$(gh pr view "$n" --json labels -q '[.labels[].name] | index("Merge-Conflict") != null')
+            if [ "$state" = CONFLICTING ] && [ "$labelled" = false ]; then
+              gh api -X POST "repos/$GH_REPO/issues/$n/labels" -f "labels[]=Merge-Conflict" >/dev/null || true
+              gh api -X POST "repos/$GH_REPO/issues/$n/labels" -f "labels[]=Needs-Author-Action" >/dev/null || true
+              printf '%s\n' "<!-- lanpair-conflict -->" "⚠️ The latest changes to \`main\` conflict with this pull request, so it cannot be merged until that is resolved: bring \`main\` into your branch, fix the conflicting files, and push (or use **Resolve conflicts** on this page)." > note.md
+              gh pr comment "$n" --body-file note.md >/dev/null
+            elif [ "$state" = MERGEABLE ] && [ "$labelled" = true ]; then
+              gh api -X DELETE "repos/$GH_REPO/issues/$n/labels/Merge-Conflict" >/dev/null 2>&1 || true
+            fi
+          done
+
+
+  welcome:
+    # A first pull request to lanpair gets a welcome: how to check it locally, the rules, and
+    # what the bot does. Once per person (GitHub says when it is their first).
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'opened' &&
+      (github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' ||
+       github.event.pull_request.author_association == 'FIRST_TIMER' ||
+       github.event.pull_request.author_association == 'NONE')
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          base="$SERVER/$GH_REPO/blob/main"
+          printf '%s\n' \
+            "<!-- lanpair-welcome -->" \
+            "### 👋 Welcome, @$AUTHOR, and thank you for your first pull request to lanpair!" \
+            "" \
+            "A few things that help it go in quickly:" \
+            "" \
+            "- **Check it locally** before pushing (the same as CI, all without opening a window):" \
+            '  ```bash' \
+            '  pip install -e ".[dev]"' \
+            '  ruff check . && ruff format --check .' \
+            '  mypy src' \
+            '  pytest' \
+            '  ```' \
+            "- **The rules:** English in the code, comments and commits; tests need no network; one topic per pull request; changes to keys, signatures or pairing explain their security impact. See [CONTRIBUTING.md]($base/CONTRIBUTING.md) and the [code of conduct]($base/CODE_OF_CONDUCT.md)." \
+            "- **Contribution terms:** I will post them in a moment; reply to agree, once, and it counts for your later pull requests too." \
+            "- **The checks** run after a maintainer approves running them for a first-time contributor. My status comment below says what passed, what failed and what usually fixes it. Comment \`/help\` for the commands, e.g. \`/retest\`." \
+            "- **Questions** are welcome right here, in English or Chinese." \
+            > welcome.md
+          gh pr comment "$NUMBER" --body-file welcome.md >/dev/null
+
+  thanks:
+    # Every merged pull request gets a thank-you (usually merged by auto-merge after approval).
+    # Bots like Dependabot are thanked without an @mention, so it isn't read as a command.
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'closed' &&
+      github.event.pull_request.merged
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.AGENT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -euo pipefail
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then who="$AUTHOR"; else who="@$AUTHOR"; fi
+          printf '%s\n' \
+            "<!-- lanpair-thanks -->" \
+            "### 🎉 Merged! Thank you for your contribution, $who!" \
+            "" \
+            "Your change is now on \`main\` and will ship in the next lanpair release." \
+            "Ideas, bug reports and more pull requests are always welcome. 🔐" \
+            > thanks.md
+          gh pr comment "$NUMBER" --body-file thanks.md >/dev/null

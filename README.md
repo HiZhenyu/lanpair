@@ -16,16 +16,18 @@ code sees it.
 ```python
 # Host (e.g. a front desk)
 from lanpair import Host
+
 host = Host("Desk")
 print(host.pairing_qr())
 host.send("room-3", {"type": "close"})
-for peer, msg in host.messages():   # already verified
+for peer, msg in host.messages():  # already verified
     print(peer, msg)
 
 # Device (e.g. a room PC)
 from lanpair import Device
+
 dev = Device("Room 3")
-dev.pair(scanned_code)              # once
+dev.pair(scanned_code)  # once
 for msg in dev.messages():
     ...
 ```
