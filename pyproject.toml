@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "TonyD365" }]
-dependencies = ["cryptography>=42"]
+dependencies = ["cryptography>=50.0.2"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python :: 3",
@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+dev = ["pytest>=9.2.0", "ruff>=0.17.5", "mypy>=2.4.1"]
 
 [project.urls]
 Homepage = "https://github.com/TonyD365/lanpair"
