@@ -1,0 +1,56 @@
+# lanpair design
+
+## Goal
+
+Two devices on the same LAN find each other, establish trust once with a human in the
+loop, and then exchange messages that the receiver can prove came from the paired peer,
+were meant for it, and are not replays.
+
+## Threat model
+
+- Attacker is on the same LAN: can read, inject, drop, delay and replay packets, and can
+  advertise fake mDNS services.
+- Attacker does **not** see the device screens during pairing.
+- Out of scope (v1): a compromised host, physical access to stored keys.
+
+## Layers
+
+1. **Discovery (mDNS / zeroconf).** Only finds addresses. Never a source of trust.
+2. **Identity.** Each device generates an Ed25519 key pair on first run. The private key
+   goes to the OS key store (Keychain / Windows Credential Manager / Secret Service via
+   `keyring`); it is never written to a plain file.
+3. **Pairing (once).**
+   - *QR code:* carries the host's full public key, address and a 128-bit one-time secret.
+     Scanning it is the out-of-band trust step.
+   - *6-digit code:* too short to carry a key, so it must not be used as a plain shared
+     check — a LAN attacker could swap public keys in transit. Use a PAKE (SPAKE2 or
+     CPace) keyed by the code, and confirm both public keys inside the PAKE transcript.
+     Limit attempts and expire the code.
+   - Both sides show a short fingerprint of the peer key for an optional visual check.
+4. **Messaging.** Every message is a signed envelope (`envelope.py`): the signature
+   covers version, sender id, recipient id, timestamp, sequence number and body.
+   Receivers drop anything with an unknown sender, bad signature, wrong recipient,
+   timestamp outside ±30 s, or non-increasing sequence number. Rejected messages never
+   reach application code.
+5. **Confidentiality (planned).** Signatures prove origin but do not hide content. v1
+   will add an encrypted channel (Noise `XX`/`IK` with the pinned Ed25519/X25519 keys,
+   or mutual TLS with pinned certificates) so message bodies are not readable on the LAN.
+
+## Open questions
+
+- Sequence numbers must survive restarts (persist last-seen seq, or add a per-session
+  random nonce to the signed fields).
+- Mobile clients: a small web page or app speaking the same protocol.
+- External security review before 1.0.
+
+## Status
+
+| Piece | State |
+|---|---|
+| Identity + signed envelopes | done, tested |
+| Key storage via OS key store | todo |
+| mDNS discovery | todo (port from YTKTV) |
+| QR pairing | todo |
+| PAKE code pairing | todo |
+| Encrypted channel | todo |
+| `Host` / `Device` high-level API | todo |
