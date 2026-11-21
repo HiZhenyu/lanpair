@@ -39,9 +39,14 @@ screens during pairing. Especially welcome:
 - a way to pair without seeing the QR code or the short code;
 - key material showing up anywhere outside the OS key store.
 
-## Known limits (pre-1.0)
+## Known limits
 
 - **No forward secrecy for the receiver**: bodies are encrypted with a fresh sender key, but
   someone who later steals a receiver's seed can decrypt messages they recorded earlier.
   Message sizes and who talks to whom stay visible on the network.
-- **No external security review yet.** One is planned before 1.0.
+- **Pairing offers can be locked by guessing**: anyone on the network can send five wrong
+  answers and lock an open offer (they cannot pair or learn the secret). Make a new offer.
+- **Addresses follow authenticated messages**: an attacker who can delay a device's packet
+  and deliver a copy from another address first makes the host reply to that address. The
+  replies stay unreadable and unusable there; the next real message moves the address back.
+- **No external security review yet.**

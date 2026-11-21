@@ -30,10 +30,9 @@ handling and replay windows: a week of security work for a side feature.
 encrypted to its recipient, signed by its sender and checked for replay before your code
 ever sees it.
 
-> **Status: 1.x, stable API.** Identity, encrypted envelopes, replay protection, key
-> storage and discovery are done, tested and fuzzed, and follow semantic versioning.
-> Pairing flows (QR, 6-digit code) and the `Host` / `Device` API are still to come and will
-> be added without breaking changes. There has been no external security review yet.
+> **Status: 1.x, stable API** under semantic versioning. Tested on Linux, macOS and
+> Windows, property-tested and fuzzed. 6-digit code pairing is still to come. There has
+> been no external security review yet.
 
 ## Contents
 
@@ -47,7 +46,37 @@ ever sees it.
 
 ## Quick look
 
-The building blocks available today. You choose the transport (UDP, TCP, WebSocket,
+```bash
+pip install "lanpair[all]"
+```
+
+```python
+# On the host (a front desk, a hub)        # On the device (a room PC, a Pi)
+from lanpair import Host                    from lanpair import Device
+
+host = Host("Front desk")                   dev = Device("Room 3")
+host.start()                                dev.start()
+host.pairing_offer().print_qr()             dev.pair(scanned_text)   # once, ever
+for msg in host.messages():                 dev.send({"type": "checkout"})
+    print(msg.sender.name, msg.body)        for msg in dev.messages():
+                                                handle(msg.body)
+host.send(device_id, {"type": "close"})
+```
+
+That is the whole setup. Behind it:
+
+- **Pairing by QR code.** The code carries the host's keys and a one-time secret. The
+  device proves it scanned the code; nobody on the network can join or impersonate the
+  host. One device per code, 5 minutes, 5 tries.
+- **Keys in the OS key store**, peers and replay counters on disk, so pairing survives
+  restarts and old messages stay rejected.
+- **Discovery with mDNS**, so changing IP addresses don't matter.
+- **Every message** encrypted, signed, bound to its recipient and replay-checked before
+  `messages()` hands it to you.
+
+### Lower level: bring your own transport
+
+The building blocks under `Host` and `Device`. You choose the transport (TCP, WebSocket,
 anything that carries bytes); lanpair makes the bytes safe.
 
 ```python
@@ -145,31 +174,16 @@ key. The full threat model, the reasoning behind each layer, and the known limit
 
 ## Where it's going
 
-The goal is a two-object API where you never touch keys:
-
-```python
-# Host, e.g. a front desk            # Device, e.g. a room PC
-from lanpair import Host             from lanpair import Device
-
-host = Host("Desk")                  dev = Device("Room 3")
-print(host.pairing_qr())             dev.pair(scanned_code)      # once
-host.send("room-3", {"type": "close"})
-                                     for msg in dev.messages():  # already verified
-                                         handle(msg)
-```
-
 | Piece | State |
 |---|---|
-| Identity, signed + encrypted envelopes | ✅ done |
-| Replay protection across restarts | ✅ done |
-| Keys in the OS key store (Keychain, Credential Manager, Secret Service) | ✅ done |
-| mDNS / zeroconf discovery | 🔜 |
-| Keys in the OS key store (Keychain, Credential Manager, Secret Service) | 🔜 next |
-| mDNS / zeroconf discovery | ✅ done |
-| QR code pairing | 🔜 |
-| 6-digit code pairing with a PAKE | 🔜 |
-| `Host` / `Device` API | 🔜 |
-| Published on PyPI | ✅ 1.0.0 |
+| Identity, signed + encrypted envelopes | ✅ 1.0 |
+| Replay protection across restarts | ✅ 1.0 |
+| Keys in the OS key store (Keychain, Credential Manager, Secret Service) | ✅ 1.0 |
+| mDNS / zeroconf discovery | ✅ 1.0 |
+| QR code pairing | ✅ 1.1 |
+| `Host` / `Device` API | ✅ 1.1 |
+| 6-digit code pairing with a PAKE | 🔜 next |
+| TCP transport for large messages | 🔜 |
 
 Want to help with one of these? See the [open issues](https://github.com/TonyD365/lanpair/issues).
 
@@ -180,7 +194,7 @@ Want to help with one of these? See the [open issues](https://github.com/TonyD36
 | Authenticated messages | ✅ | ❌ | ✅ | ✅ |
 | Encrypted | ✅ | ❌ | ✅ | ✅ |
 | Replay protection | ✅ built in | ❌ | per connection | you build it |
-| Pairing flow (QR / code) | 🔜 built in | ❌ | you build a CA | you build it |
+| Pairing flow (QR code) | ✅ built in | ❌ | you build a CA | you build it |
 | Lines of code for you | a few | a few | many | many |
 
 ## Install
@@ -189,7 +203,8 @@ Want to help with one of these? See the [open issues](https://github.com/TonyD36
 pip install lanpair                        # core: identities and secure envelopes
 pip install "lanpair[keyring]"             # + keys in the OS key store
 pip install "lanpair[discovery]"           # + mDNS discovery
-pip install "lanpair[keyring,discovery]"   # everything
+pip install "lanpair[qr]"                  # + QR codes for pairing
+pip install "lanpair[all]"                 # everything
 ```
 
 Python 3.10 or newer. lanpair follows [semantic versioning](https://semver.org): no

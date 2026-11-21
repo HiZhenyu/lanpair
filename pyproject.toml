@@ -22,7 +22,12 @@ classifiers = [
 [project.optional-dependencies]
 keyring = ["keyring>=25"]
 discovery = ["zeroconf>=0.136"]
-dev = ["pytest>=9.2.0", "ruff>=0.17.5", "mypy>=2.4.1", "keyring>=25", "zeroconf>=0.136"]
+qr = ["segno>=1.6"]
+all = ["keyring>=25", "zeroconf>=0.136", "segno>=1.6"]
+dev = [
+    "pytest>=9.2.0", "ruff>=0.17.5", "mypy>=2.4.1", "hypothesis",
+    "keyring>=25", "zeroconf>=0.136", "segno>=1.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/TonyD365/lanpair"

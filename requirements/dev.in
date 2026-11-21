@@ -5,4 +5,5 @@ ruff
 mypy
 keyring>=25
 zeroconf>=0.136
+segno>=1.6
 hypothesis
