@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (2026-11-21)
 
 - **Forward secrecy** for `Host` / `Device`: messages are encrypted to short-lived session
   keys that exist only in memory, are replaced every 10 minutes and deleted after one more
@@ -10,6 +10,9 @@
   older, which keep using the long-term key.
 - `Sealer.seal(..., box_key=...)`, `Opener.add_session_key()`, `Opener.remove_session_key()`
   and `Opener.open_detailed()` let the building blocks use session keys too.
+- Releases carry the wheel and source archive with signed SLSA build provenance
+  (`gh attestation verify ... -R TonyD365/lanpair`).
+- Tested on Python 3.10 to 3.15, and the package now lists those versions.
 - Homepage at https://tonyd365.github.io/lanpair/ (`site/`, deployed by GitHub Pages), and
   Documentation, Source, Issues and Changelog links on PyPI.
 
