@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `Host` and `Device`: the high-level API. UDP transport, QR-code pairing, mDNS
+  discovery, keys in the OS key store, and peers and replay counters on disk, so a
+  device pairs once and keeps working across restarts and address changes.
+  They listen on all interfaces (other devices must reach them); `bind=` limits that
+  to one interface.
+- `PairingOffer` / `lanpair.pairing`: one-time pairing offers (`lanpair://pair?...`) with
+  the host's keys, address and a 128-bit secret; one device per offer, 5 minutes, 5 tries;
+  the secret travels encrypted. `offer.print_qr()` with `pip install "lanpair[qr]"`.
+- New extras: `qr`, and `all` for keyring, discovery and qr together.
+
 ## 1.0.0 (2026-11-21)
 
 The API documented in the README is now stable and follows semantic versioning.

@@ -20,8 +20,14 @@ were meant for it, and are not replays.
    goes to the OS key store (Keychain / Windows Credential Manager / Secret Service via
    `keyring`); it is never written to a plain file.
 3. **Pairing (once).**
-   - *QR code:* carries the host's full public key, address and a 128-bit one-time secret.
-     Scanning it is the out-of-band trust step.
+   - *QR code* (`pairing.py`): carries the host's full public identity, address and a
+     128-bit one-time secret (`lanpair://pair?...`). Scanning it is the out-of-band trust
+     step: the device learns the host's real keys. The device answers with its public
+     identity in the clear and an envelope sealed to the host whose encrypted body holds
+     the secret; the host checks the envelope's signature against that identity, then the
+     secret in constant time. One device per offer; the offer expires (5 min) and locks
+     after 5 wrong answers; replayed requests are refused. The host confirms with a sealed
+     message, so the device knows the pairing took.
    - *6-digit code:* too short to carry a key, so it must not be used as a plain shared
      check — a LAN attacker could swap public keys in transit. Use a PAKE (SPAKE2 or
      CPace) keyed by the code, and confirm both public keys inside the PAKE transcript.
@@ -56,7 +62,7 @@ were meant for it, and are not replays.
 | Replay protection across restarts | done, tested |
 | Key storage via OS key store | done, tested (`lanpair[keyring]`) |
 | mDNS discovery | done, tested (`lanpair[discovery]`) |
-| QR pairing | todo |
+| QR pairing | done, tested |
 | PAKE code pairing | todo |
 | Encrypted message bodies | done, tested |
-| `Host` / `Device` high-level API | todo |
+| `Host` / `Device` high-level API (UDP) | done, tested |
