@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `load_or_create_identity()` keeps the device's seed in the OS key store (macOS Keychain,
+  Windows Credential Manager, Secret Service), with `load_identity`, `save_identity` and
+  `delete_identity` in `lanpair.keystore`. Optional: `pip install "lanpair[keyring]"`.
+
 ## 0.1.0 (2026-11-21)
 
 First release: the cryptographic core. Discovery, pairing and the high-level `Host` /
