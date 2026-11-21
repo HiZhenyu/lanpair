@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (2026-11-21)
 
 - `Host` and `Device`: the high-level API. UDP transport, QR-code pairing, mDNS
   discovery, keys in the OS key store, and peers and replay counters on disk, so a
@@ -11,6 +11,8 @@
   the host's keys, address and a 128-bit secret; one device per offer, 5 minutes, 5 tries;
   the secret travels encrypted. `offer.print_qr()` with `pip install "lanpair[qr]"`.
 - New extras: `qr`, and `all` for keyring, discovery and qr together.
+- Nodes keep their port across restarts, and say hello to their peers when they start
+  (after an mDNS lookup), so messages keep arriving when either side restarts or moves.
 
 ## 1.0.0 (2026-11-21)
 

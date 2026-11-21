@@ -174,7 +174,7 @@ class _Node:
         # All interfaces by default: other devices on the LAN must reach this one. Every
         # datagram is authenticated before use. Pass bind="192.168.1.10" to listen on one
         # interface only (e.g. not on a VPN or a public network).
-        self._sock.bind((bind, port))
+        self._bind(bind, port)
         self._sock.settimeout(_POLL)
         self._announce = announce
         self._announcer: Any = None
@@ -184,6 +184,26 @@ class _Node:
         self.dropped = 0
         """Datagrams refused so far (forged, tampered, replayed, garbage, ...)."""
 
+    def _bind(self, bind: str, port: int) -> None:
+        """Bind, reusing the port from the last run so peers' stored addresses stay right."""
+        state = self.state_dir / "node.json"
+        if port == 0:
+            try:
+                saved = json.loads(state.read_text(encoding="utf-8")).get("port", 0)
+                port = saved if isinstance(saved, int) and 0 < saved < 65536 else 0
+            except (FileNotFoundError, ValueError, AttributeError):
+                port = 0
+            try:
+                self._sock.bind((bind, port))
+            except OSError:  # taken by something else since: take any free port
+                self._sock.bind((bind, 0))
+        else:
+            self._sock.bind((bind, port))
+        self._port = int(self._sock.getsockname()[1])
+        if self._port != port:
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text(json.dumps({"port": self.port}), encoding="utf-8")
+
     # --- lifecycle ---------------------------------------------------------------------
 
     @property
@@ -192,7 +212,8 @@ class _Node:
 
     @property
     def port(self) -> int:
-        return int(self._sock.getsockname()[1])
+        """The UDP port this node listens on (the same across restarts when possible)."""
+        return self._port
 
     def start(self) -> None:
         """Start receiving, and announce this device on the network (unless announce=False)."""
@@ -204,6 +225,32 @@ class _Node:
             self._announcer = Announcer(self.identity.public, self.name, self.port, app=self.app)
         self._thread = threading.Thread(target=self._run, name=f"lanpair-{self.name}", daemon=True)
         self._thread.start()
+        if self._book.all():
+            threading.Thread(target=self._greet, name="lanpair-greet", daemon=True).start()
+
+    def _greet(self) -> None:
+        """After a start: tell every peer where we are now, and find peers that moved.
+
+        Each peer learns our current address from the signed hello. With mDNS on, peers are
+        looked up first, in case they changed address while we were down.
+        """
+        for peer in self._book.all():
+            if self._stop.is_set():
+                return
+            if self._announce:
+                from .discovery import find
+
+                found = find(peer.device_id, seconds=2.0, app=self.app)
+                current = self._book.get(peer.device_id)
+                if found is not None and current is not None:
+                    peer = PeerInfo(
+                        current.device_id, current.name, current.identity, found.address
+                    )
+                    self._book.put(peer)
+            try:
+                self._send(peer, {"lanpair": "hello"})
+            except (OSError, LookupError, ValueError):
+                pass  # unreachable now; it will find us through its own hello or mDNS
 
     def close(self) -> None:
         self._stop.set()
