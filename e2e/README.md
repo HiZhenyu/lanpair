@@ -25,6 +25,12 @@ What it checks:
    with `EnvelopeError`, not a crash.
 5. After every device restarts: identities are the same (key store), all replays of
    messages recorded before the restart are rejected, and a new message gets through.
+6. **Host / Device** (lanpair 1.1+), in the same venvs (`hl_node.py`): the device pairs from
+   the link (standing in for the QR code); a small message (UDP) and a 300 KB one (TCP)
+   go both ways; an attacker is refused with the already-used offer even knowing its
+   secret, and with a second offer after five wrong guesses locked it; forged messages,
+   a message claiming to be the device and bad TCP frames are dropped; after both
+   restart, messages flow without pairing again.
 
 Needs Python 3.10+, network access to PyPI, and multicast on the loopback interface (macOS
 and most Linux desktops; not GitHub-hosted runners, so it is not part of CI). Output goes

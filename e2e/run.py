@@ -65,6 +65,65 @@ def start(role, n, *args, **extra):
     )
 
 
+def start_hl(role, n, *args):
+    py = str(WORK / n / "venv/bin/python")
+    return subprocess.Popen(
+        [py, "-I", str(HERE / "hl_node.py"), role, str(WORK / "hl"), *args],
+        env=env(n),
+        cwd=WORK / n,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def highlevel():
+    """Host and Device across separate venvs: pairing, UDP and TCP messages, attacks."""
+    hl = WORK / "hl"
+    shutil.rmtree(hl, ignore_errors=True)
+    hl.mkdir()
+    big = {"blob": "x" * 300_000}
+    host = start_hl("host", "desk")
+    dev = start_hl("device", "room1", json.dumps(["hello", big]), "attack.done")
+    att = start_hl("attacker", "attacker")
+    h, rc_h = collect(host, 120)
+    v, rc_v = collect(dev, 120)
+    a, rc_a = collect(att, 120)
+    check(rc_h == rc_v == rc_a == 0, "[host/device] every process exited cleanly")
+    ev = {(e["role"], e["event"]): e for e in h + v + a}
+    check(ev.get(("device", "paired"), {}).get("host") == "E2E desk", "device paired by link")
+    check(ev.get(("host", "paired"), {}).get("name") == "E2E room", "host saw the device pair")
+    echoes = [e for e in v if e["event"] == "echo"]
+    check([e["ok"] for e in echoes] == [True, True], "small (UDP) and 300 KB (TCP) both ways")
+    check(
+        not ev.get(("attacker", "used_offer"), {}).get("paired", True),
+        "attacker refused with the used offer, even knowing its secret",
+    )
+    check(
+        not ev.get(("attacker", "locked_offer"), {}).get("paired", True),
+        "5 wrong guesses lock an offer; the right secret then fails too",
+    )
+    done = ev.get(("host", "done"), {})
+    check(done.get("devices") == ["E2E room"], "only the real device is paired")
+    check(done.get("dropped", 0) >= 11, f"host dropped all attacks ({done.get('dropped')})")
+    received = [e for e in h if e["event"] == "received"]
+    check(
+        len(received) == 2 and all(e["sender"] == "E2E room" for e in received),
+        "host got exactly the device's 2 messages",
+    )
+
+    # Restart both: no pairing again, messages still flow.
+    for f in hl.glob("*"):
+        f.unlink()
+    host = start_hl("host", "desk")
+    dev = start_hl("device", "room1", json.dumps(["after restart"]))
+    h, rc_h = collect(host, 60)
+    v, rc_v = collect(dev, 60)
+    check(rc_h == rc_v == 0, "[restart] host and device exited cleanly")
+    check(not any(e["event"] == "paired" for e in h + v), "[restart] no pairing needed")
+    check([e["ok"] for e in v if e["event"] == "echo"] == [True], "[restart] messages still flow")
+
+
 def collect(p, timeout=60):
     out, err = p.communicate(timeout=timeout)
     if p.returncode:
@@ -173,6 +232,13 @@ for raw in (b'[' * 200000, b'{"a":' * 200000, b'x' * (2 << 20)):
         f"after restart, all {len(rej)} replays rejected",
     )
     check([e["body"] for e in acc] == bodies, "after restart, the new message is accepted")
+
+    # ---- phase 3: the high-level API (Host / Device), lanpair 1.1+
+    version = next(e["version"] for e in starts)
+    if tuple(int(x) for x in version.split(".")[:2]) >= (1, 1):
+        highlevel()
+    else:
+        print(f"     (Host/Device checks skipped: {version} has no high-level API)")
 finally:
     import socket
 
