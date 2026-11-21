@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Security: deeply nested JSON (about 100,000 levels) made `Opener.open` raise
+  `RecursionError` instead of `EnvelopeError`, before any signature check, so anyone on
+  the LAN could crash a receive loop that only catches `EnvelopeError`. It is now rejected
+  as malformed, and envelopes over `Opener.max_size` (1 MiB by default) are refused before
+  parsing. Found by the simulated-network test.
+- `load_or_create_identity()` keeps the device's seed in the OS key store (macOS Keychain,
+  Windows Credential Manager, Secret Service), with `load_identity`, `save_identity` and
+  `delete_identity` in `lanpair.keystore`. Optional: `pip install "lanpair[keyring]"`.
 - `lanpair.discovery`: `Announcer` tells the LAN where a device listens, and
   `browse()` / `find(device_id)` locate devices with mDNS / DNS-SD. Announcements are
   validated and treated as untrusted hints. Optional: `pip install "lanpair[discovery]"`.

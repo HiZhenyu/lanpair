@@ -9,15 +9,18 @@ from .envelope import (
     SeqStore,
 )
 from .identity import Identity, PublicIdentity
+from .keystore import KeyStoreError, load_or_create_identity
 
 __all__ = [
     "EnvelopeError",
     "Identity",
     "JsonFileSeqStore",
+    "KeyStoreError",
     "MemorySeqStore",
     "Opener",
     "PublicIdentity",
     "Sealer",
     "SeqStore",
+    "load_or_create_identity",
 ]
 __version__ = "0.1.0"

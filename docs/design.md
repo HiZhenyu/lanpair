@@ -54,7 +54,7 @@ were meant for it, and are not replays.
 |---|---|
 | Identity + signed envelopes | done, tested |
 | Replay protection across restarts | done, tested |
-| Key storage via OS key store | todo |
+| Key storage via OS key store | done, tested (`lanpair[keyring]`) |
 | mDNS discovery | done, tested (`lanpair[discovery]`) |
 | QR pairing | todo |
 | PAKE code pairing | todo |

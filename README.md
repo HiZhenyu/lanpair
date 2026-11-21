@@ -70,6 +70,16 @@ assert peer == desk.public and body["type"] == "close"
 Without a store, `Opener` keeps its memory in RAM and, to stay replay-safe, refuses
 messages for the first 30 seconds after it starts.
 
+To keep a device's keys across restarts, store them in the operating system's key store
+(macOS Keychain, Windows Credential Manager, Secret Service on Linux) instead of a file:
+
+```python
+# pip install "lanpair[keyring]"
+from lanpair import load_or_create_identity
+
+me = load_or_create_identity()  # generated on first run, the same one afterwards
+```
+
 Find paired devices on the network by id, so changing IP addresses don't matter:
 
 ```python
@@ -146,6 +156,8 @@ host.send("room-3", {"type": "close"})
 |---|---|
 | Identity, signed + encrypted envelopes | ✅ done |
 | Replay protection across restarts | ✅ done |
+| Keys in the OS key store (Keychain, Credential Manager, Secret Service) | ✅ done |
+| mDNS / zeroconf discovery | 🔜 |
 | Keys in the OS key store (Keychain, Credential Manager, Secret Service) | 🔜 next |
 | mDNS / zeroconf discovery | ✅ done |
 | QR code pairing | 🔜 |
