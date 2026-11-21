@@ -80,6 +80,20 @@ from lanpair import load_or_create_identity
 me = load_or_create_identity()  # generated on first run, the same one afterwards
 ```
 
+Find paired devices on the network by id, so changing IP addresses don't matter:
+
+```python
+# pip install "lanpair[discovery]"
+from lanpair.discovery import Announcer, find
+
+with Announcer(me.public, "Room 3", port=8765):  # on the device
+    ...
+
+room3 = find(room3_id)  # on the desk: FoundDevice(..., address="192.168.1.23:8765") or None
+```
+
+Discovery is only a hint about addresses; it never decides who is trusted.
+
 What an eavesdropper sees on the network: who is talking to whom and how much, nothing
 more.
 
@@ -144,6 +158,8 @@ host.send("room-3", {"type": "close"})
 | Replay protection across restarts | ✅ done |
 | Keys in the OS key store (Keychain, Credential Manager, Secret Service) | ✅ done |
 | mDNS / zeroconf discovery | 🔜 |
+| Keys in the OS key store (Keychain, Credential Manager, Secret Service) | 🔜 next |
+| mDNS / zeroconf discovery | ✅ done |
 | QR code pairing | 🔜 |
 | 6-digit code pairing with a PAKE | 🔜 |
 | `Host` / `Device` API | 🔜 |

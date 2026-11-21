@@ -10,6 +10,9 @@
 - `load_or_create_identity()` keeps the device's seed in the OS key store (macOS Keychain,
   Windows Credential Manager, Secret Service), with `load_identity`, `save_identity` and
   `delete_identity` in `lanpair.keystore`. Optional: `pip install "lanpair[keyring]"`.
+- `lanpair.discovery`: `Announcer` tells the LAN where a device listens, and
+  `browse()` / `find(device_id)` locate devices with mDNS / DNS-SD. Announcements are
+  validated and treated as untrusted hints. Optional: `pip install "lanpair[discovery]"`.
 
 ## 0.1.0 (2026-11-21)
 
