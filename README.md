@@ -51,7 +51,7 @@ anything that carries bytes); lanpair makes the bytes safe.
 ```python
 from lanpair import Identity, JsonFileSeqStore, Opener, Sealer
 
-desk, room3 = Identity.generate(), Identity.generate()   # one per device, keep the seed
+desk, room3 = Identity.generate(), Identity.generate()  # one per device, keep the seed
 
 # Pairing: each side stores the other's public identity (64 bytes, fits in a QR code).
 # The store remembers what was already received, so replays fail even after a restart.
