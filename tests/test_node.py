@@ -76,9 +76,7 @@ def test_survives_restart_without_pairing_again(pair, tmp_path):
     host2 = make(Host, "desk", tmp_path, identity=ids[0])
     dev2 = make(Device, "room3", tmp_path, identity=ids[1])
     try:
-        # The host moved to a new port; tell the device (normally mDNS finds it).
-        h = dev2.host
-        dev2._book.put(type(h)(h.device_id, h.name, h.identity, f"127.0.0.1:{host2.port}"))
+        assert host2.port == host.port  # same port as before: stored addresses stay right
         dev2.send("after restart")
         assert host2.receive(timeout=2).body == "after restart"
         # A message recorded before the restart is refused.
@@ -182,3 +180,42 @@ def test_bind_limits_the_listening_interface(tmp_path):
         assert host._sock.getsockname()[0] == "127.0.0.1"
     finally:
         host.close()
+
+
+def test_device_on_a_new_port_tells_the_host(pair, tmp_path):
+    host, dev = pair
+    identity = dev.identity
+    dev.close()
+    (tmp_path / "room3" / "node.json").unlink()  # as if its old port were gone
+    import socket
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    blocker.bind(("127.0.0.1", 0))  # likely a different port next time anyway
+    dev2 = make(Device, "room3", tmp_path, identity=identity)
+    try:
+        # The device's signed hello moves the host to its new address.
+        assert wait(lambda: host.devices[0].address == f"127.0.0.1:{dev2.port}")
+        host.send(dev2.device_id, "found you")
+        assert dev2.receive(timeout=2).body == "found you"
+    finally:
+        dev2.close()
+        blocker.close()
+
+
+def test_saved_port_taken_falls_back_to_a_free_one(tmp_path):
+    import socket
+
+    host = make(Host, "desk", tmp_path)
+    port = host.port
+    host.close()
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    squatter.bind(("127.0.0.1", port))
+    try:
+        host2 = make(Host, "desk", tmp_path, identity=host.identity)
+        assert host2.port != port
+        host2.close()
+        host3 = make(Host, "desk", tmp_path, identity=host.identity)  # remembers the new one
+        assert host3.port == host2.port
+        host3.close()
+    finally:
+        squatter.close()
