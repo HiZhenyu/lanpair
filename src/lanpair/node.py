@@ -151,6 +151,7 @@ class _Node:
         state_dir: str | os.PathLike[str] | None = None,
         identity: Identity | None = None,
         announce: bool = True,
+        bind: str = "0.0.0.0",
     ) -> None:
         from .discovery import service_type
 
@@ -170,7 +171,10 @@ class _Node:
             self._opener.add_peer(peer.identity)
         self._sealer = Sealer(identity)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind(("0.0.0.0", port))
+        # All interfaces by default: other devices on the LAN must reach this one. Every
+        # datagram is authenticated before use. Pass bind="192.168.1.10" to listen on one
+        # interface only (e.g. not on a VPN or a public network).
+        self._sock.bind((bind, port))
         self._sock.settimeout(_POLL)
         self._announce = announce
         self._announcer: Any = None
@@ -307,7 +311,8 @@ class Host(_Node):
     ``Host(name)`` keeps its keys in the OS key store (needs ``lanpair[keyring]``) and its
     paired devices and sequence numbers in ``~/.lanpair/<app>/host-<name>/``. Pass
     ``identity=`` and ``state_dir=`` to choose yourself. ``announce=False`` turns off mDNS
-    (then devices must reach the address in the QR code).
+    (then devices must reach the address in the QR code). It listens on all interfaces;
+    ``bind="<ip>"`` limits it to one, and ``port=`` fixes the port.
     """
 
     _role = "host"

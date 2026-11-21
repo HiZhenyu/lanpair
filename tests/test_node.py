@@ -14,6 +14,7 @@ def make(cls, name, tmp_path, identity=None):
         state_dir=tmp_path / name,
         announce=False,
         app="lanpair-test",
+        bind="127.0.0.1",  # tests never listen beyond this machine
     )
     node.start()
     return node
@@ -173,3 +174,11 @@ def test_keeps_receiving_after_sending_to_a_closed_port(pair):
     time.sleep(0.3)
     dev.send("still listening")
     assert host.receive(timeout=2).body == "still listening"
+
+
+def test_bind_limits_the_listening_interface(tmp_path):
+    host = make(Host, "desk", tmp_path)
+    try:
+        assert host._sock.getsockname()[0] == "127.0.0.1"
+    finally:
+        host.close()
