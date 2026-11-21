@@ -28,7 +28,8 @@ Please keep it private until the advisory is out.
 
 ## What is in scope
 
-The latest release on PyPI and the `main` branch. Before 1.0 only the latest release is fixed.
+The latest release on PyPI and the `main` branch. Fixes go into a new release; older
+releases are not patched.
 
 The threat model is in [docs/design.md](docs/design.md): an attacker on the same network who can
 read, inject, replay and drop traffic and advertise fake devices, but cannot see the devices'
