@@ -72,13 +72,17 @@ jobs:
     concurrency:
       group: pr-assistant-${{ github.event.pull_request.number || github.event.issue.number || inputs.number || github.event.workflow_run.head_sha }}
       cancel-in-progress: false
+    # After the terms job: a reply "I agree ..." must be in the ledger before this job reads it,
+    # or this job (started by the same comment) would turn the check red again.
+    needs: terms
     if: >-
+      !cancelled() && (
       github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
         github.event.comment.user.login != 'TonyD365-Agent' &&
         github.event.comment.user.login != 'github-actions[bot]') ||
       github.event.workflow_run.event == 'pull_request' ||
-      github.event.workflow_run.event == 'pull_request_review'
+      github.event.workflow_run.event == 'pull_request_review')
     runs-on: ubuntu-slim
     permissions:
       contents: read
@@ -130,6 +134,12 @@ jobs:
           busy=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$head&event=pull_request&per_page=100" \
             -q '[.workflow_runs[] | select(.status != "completed")] | length' || echo 0)
           if [ "$running" = 0 ] && [ "${busy:-0}" != 0 ]; then running=$busy; fi
+          # Workflows from a first-time contributor's fork wait until the maintainer approves
+          # them ("Approve workflows to run"); until then they are neither passed nor running.
+          gh api "repos/$GH_REPO/actions/runs?head_sha=$head&per_page=100" \
+            -q '[.workflow_runs[] | select(.conclusion == "action_required") | .name] | unique[]' \
+            > waiting.txt || true
+          awaiting=$(wc -l < waiting.txt | tr -d ' ')
 
           hint() {  # what a failed check usually means, and what to do
             case "$1" in
@@ -230,12 +240,13 @@ jobs:
           done
 
           # One status for the ruleset to require, and auto-merge once approved.
-          if [ "$total" = 0 ] || [ "$running" != 0 ]; then agg=pending; aggdesc="Checks are running"
+          if [ "$awaiting" != 0 ]; then agg=pending; aggdesc="Workflows wait for the maintainer's approval to run"
+          elif [ "$total" = 0 ] || [ "$running" != 0 ]; then agg=pending; aggdesc="Checks are running"
           elif [ "$failed" != 0 ]; then agg=failure; aggdesc="$failed check(s) failed"
           elif [ "$internal" != 0 ]; then agg=failure; aggdesc="$internal check(s) cancelled: comment /retest"
           elif [ "$terms" = no ]; then agg=failure; aggdesc="Contribution terms not agreed yet"
           else agg=success; aggdesc="Every check passed"; fi
-          [ "$agg" = pending ] && [ "$terms" = no ] && aggdesc="Checks are running; terms not agreed yet"
+          [ "$agg" = pending ] && [ "$terms" = no ] && aggdesc="$aggdesc; terms not agreed yet"
           gh api -X POST "repos/$GH_REPO/statuses/$head" -f state="$agg" -f context="lanpair checks" \
             -f description="$aggdesc" -f target_url="$SERVER/$GH_REPO/pull/$NUMBER" >/dev/null
           if [ "$review" = APPROVED ] && [ "$(jq -r .isDraft <<<"$pr")" != true ]; then
@@ -248,6 +259,7 @@ jobs:
           if [ "$review" = CHANGES_REQUESTED ]; then kind=changes
           elif [ -n "$conflict" ]; then kind=conflict
           elif [ "$terms" = no ]; then kind=terms
+          elif [ "$awaiting" != 0 ]; then kind=awaiting
           elif [ "$total" = 0 ] || [ "$running" != 0 ] && [ "$failed" = 0 ]; then kind=running
           elif [ "$failed" != 0 ]; then kind=failed
           elif [ "$internal" != 0 ]; then kind=internal
@@ -256,6 +268,8 @@ jobs:
             echo "<!-- lanpair-pr-assistant kind=$kind -->"
             if [ "$review" = CHANGES_REQUESTED ]; then
               echo "### ✋ Changes requested"
+            elif [ "$awaiting" != 0 ]; then
+              echo "### ⏸️ Checks wait for the maintainer's approval to run"
             elif [ "$total" = 0 ]; then
               echo "### ⏳ Checks are starting"
             elif [ "$failed" != 0 ]; then
@@ -291,6 +305,12 @@ jobs:
                   echo "- [$name]($url): ${status/_/ }"
                 done
             fi
+            if [ "$awaiting" != 0 ]; then
+              echo
+              echo "**Waiting for approval to run:** GitHub runs workflows from a first-time contributor's fork only after the maintainer approves them, to keep the repository safe. Nothing for you to do; this comment updates once they have run."
+              echo
+              sed 's/^/- /' waiting.txt
+            fi
             if [ -n "$conflict" ]; then
               echo
               echo "**Merge conflict:** this pull request and \`main\` change the same lines, so it cannot be merged (auto-merge waits). Bring \`main\` into your branch, fix the conflicting files, and push: \`git fetch origin && git merge origin/main\`, or use **Resolve conflicts** on this page. [How to resolve a merge conflict]($SERVER/docs/pull-requests/collaborating-with-pull-requests/addressing-merge-conflicts/resolving-a-merge-conflict-on-github)"
@@ -318,6 +338,8 @@ jobs:
               echo "- Resolve the merge conflict with \`main\` (see above) and push."
             elif [ "$terms" = no ]; then
               echo "- Reply \`$PHRASE\` to agree to the contribution terms (see above)."
+            elif [ "$awaiting" != 0 ]; then
+              echo "- The maintainer approves the waiting workflows; then the checks run."
             elif [ "$failed" != 0 ]; then
               echo "- Fix the failures above and push; the checks run again by themselves."
             elif [ "$running" != 0 ]; then
