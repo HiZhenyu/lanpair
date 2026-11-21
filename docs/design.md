@@ -37,9 +37,11 @@ were meant for it, and are not replays.
      accepted number per peer in a `SeqStore`: `JsonFileSeqStore` survives restarts; with
      the default in-memory store the receiver refuses anything stamped earlier than
      30 s after it started, so messages recorded before a restart cannot be replayed.
-5. **Confidentiality (planned).** Signatures prove origin but do not hide content. v1
-   will add an encrypted channel (Noise `XX`/`IK` with the pinned Ed25519/X25519 keys,
-   or mutual TLS with pinned certificates) so message bodies are not readable on the LAN.
+5. **Confidentiality.** Each identity also has an X25519 key, derived from the same seed
+   with HKDF. Every body is encrypted to the recipient's X25519 key with a fresh
+   ephemeral key (HKDF-SHA256, ChaCha20-Poly1305); the header is the AEAD associated data
+   and the signature covers the ciphertext. Envelope version 2. Limit: no forward secrecy
+   against a later theft of the receiver's seed; a Noise session could add it later.
 
 ## Open questions
 
@@ -56,5 +58,5 @@ were meant for it, and are not replays.
 | mDNS discovery | todo (port from YTKTV) |
 | QR pairing | todo |
 | PAKE code pairing | todo |
-| Encrypted channel | todo |
+| Encrypted message bodies | done, tested |
 | `Host` / `Device` high-level API | todo |

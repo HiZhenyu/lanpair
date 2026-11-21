@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from lanpair import EnvelopeError, Identity, JsonFileSeqStore, Opener, Sealer
+from lanpair import EnvelopeError, Identity, JsonFileSeqStore, Opener, PublicIdentity, Sealer
 
 
 class Clock:
@@ -18,7 +18,7 @@ def setup():
     clock = Clock()
     desk, room3, room4 = Identity.generate(), Identity.generate(), Identity.generate()
     sealer = Sealer(desk, clock=clock)
-    opener = Opener(room3.public, clock=clock)
+    opener = Opener(room3, clock=clock)
     opener.add_peer(desk.public)
     clock.t += 31  # past the start-up window of the in-memory store
     return clock, desk, room3, room4, sealer, opener
@@ -53,10 +53,31 @@ def test_stale_rejected(setup):
         opener.open(raw)
 
 
-def test_tampered_body_rejected(setup):
+def test_body_is_not_readable_on_the_wire(setup):
+    _, _, room3, _, sealer, _ = setup
+    raw = sealer.seal(room3.public, {"secret": "door-code-4711"})
+    assert b"door-code" not in raw and b"secret" not in raw
+
+
+def test_other_paired_device_cannot_decrypt(setup):
+    clock, desk, room3, room4, sealer, _ = setup
+    raw = sealer.seal(room3.public, {"type": "close"})
+    msg = json.loads(raw)
+    msg["to"] = room4.public.device_id  # even with a re-signed header, room4 lacks the key
+    fields = {k: v for k, v in msg.items() if k != "sig"}
+    from lanpair.envelope import _b64, _canonical
+
+    msg["sig"] = _b64(desk.sign(_canonical(fields)))
+    other = Opener(room4, clock=clock)
+    other.add_peer(desk.public)
+    with pytest.raises(EnvelopeError):
+        other.open(json.dumps(msg).encode())
+
+
+def test_tampered_ciphertext_rejected(setup):
     _, _, room3, _, sealer, opener = setup
     msg = json.loads(sealer.seal(room3.public, {"type": "close"}))
-    msg["body"] = {"type": "open"}
+    msg["ct"] = msg["ct"][:-4] + ("AAAA" if not msg["ct"].endswith("AAAA") else "BBBB")
     with pytest.raises(EnvelopeError, match="bad signature"):
         opener.open(json.dumps(msg).encode())
 
@@ -85,6 +106,7 @@ def test_garbage_rejected(setup, raw):
 def test_seed_roundtrip_and_repr():
     ident = Identity.generate()
     assert Identity.from_seed(ident.seed()).public == ident.public
+    assert PublicIdentity.from_bytes(ident.public.to_bytes()) == ident.public
     assert ident.seed().hex() not in repr(ident)
 
 
@@ -100,7 +122,7 @@ def test_memory_store_rejects_replay_after_receiver_restart(setup):
     clock, desk, room3, _, sealer, _ = setup
     raw = sealer.seal(room3.public, {"type": "close"})
     clock.t += 1
-    restarted = Opener(room3.public, clock=clock)
+    restarted = Opener(room3, clock=clock)
     restarted.add_peer(desk.public)
     with pytest.raises(EnvelopeError, match="before this receiver started"):
         restarted.open(raw)
@@ -111,11 +133,11 @@ def test_memory_store_rejects_replay_after_receiver_restart(setup):
 def test_file_store_rejects_replay_after_receiver_restart(setup, tmp_path):
     clock, desk, room3, _, sealer, _ = setup
     path = tmp_path / "seq.json"
-    first = Opener(room3.public, clock=clock, store=JsonFileSeqStore(path))
+    first = Opener(room3, clock=clock, store=JsonFileSeqStore(path))
     first.add_peer(desk.public)
     raw = sealer.seal(room3.public, {"type": "close"})
     first.open(raw)
-    restarted = Opener(room3.public, clock=clock, store=JsonFileSeqStore(path))
+    restarted = Opener(room3, clock=clock, store=JsonFileSeqStore(path))
     restarted.add_peer(desk.public)
     with pytest.raises(EnvelopeError, match="replayed"):
         restarted.open(raw)
@@ -137,6 +159,8 @@ def test_file_store_rejects_bad_file(tmp_path):
         {"seq": True},
         {"seq": 1.5},
         {"ts": "now"},
+        {"eph": 1},
+        {"ct": None},
     ],
 )
 def test_wrong_types_rejected(setup, change):
