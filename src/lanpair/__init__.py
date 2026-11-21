@@ -23,4 +23,4 @@ __all__ = [
     "SeqStore",
     "load_or_create_identity",
 ]
-__version__ = "1.0.0rc1"
+__version__ = "1.0.0"

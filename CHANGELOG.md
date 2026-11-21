@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 (unreleased; 1.0.0rc1 for testing)
+## 1.0.0 (2026-11-21)
 
 The API documented in the README is now stable and follows semantic versioning.
 
@@ -17,6 +17,7 @@ The API documented in the README is now stable and follows semantic versioning.
   validated and treated as untrusted hints. Optional: `pip install "lanpair[discovery]"`.
 - Property-based tests (Hypothesis) and coverage-guided fuzzing of `Opener.open` (Atheris,
   60 s on every CI run). CI installs from hash-pinned lock files (`requirements/`).
+- `e2e/`: an end-to-end test in a simulated LAN with an attacker node, run before releases.
 
 ## 0.1.0 (2026-11-21)
 
