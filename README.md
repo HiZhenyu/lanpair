@@ -6,6 +6,7 @@
   <a href="https://github.com/TonyD365/lanpair/actions/workflows/ci.yml"><img src="https://github.com/TonyD365/lanpair/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/TonyD365/lanpair/actions/workflows/security.yml"><img src="https://github.com/TonyD365/lanpair/actions/workflows/security.yml/badge.svg" alt="Security"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/TonyD365/lanpair"><img src="https://api.scorecard.dev/projects/github.com/TonyD365/lanpair/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/16988"><img src="https://www.bestpractices.dev/projects/16988/badge" alt="OpenSSF Best Practices: passing"></a>
   <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/v/lanpair" alt="PyPI version"></a>
   <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/pyversions/lanpair" alt="Python versions"></a>
   <img src="https://img.shields.io/badge/typed-mypy%20strict-informational" alt="Typed, mypy strict">
