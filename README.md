@@ -1,5 +1,9 @@
 # lanpair
 
+[![CI](https://github.com/TonyD365/lanpair/actions/workflows/ci.yml/badge.svg)](https://github.com/TonyD365/lanpair/actions/workflows/ci.yml)
+[![Security](https://github.com/TonyD365/lanpair/actions/workflows/security.yml/badge.svg)](https://github.com/TonyD365/lanpair/actions/workflows/security.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Secure pairing and signed messaging between devices on the same LAN.
 
 > Status: early development. Not ready for production use.
