@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanpair: secure device pairing for your local network</title>
+<meta name="description" content="Pair devices on your LAN once with a QR code; every message after that is encrypted, signed and replay-proof. A Python library.">
+<meta property="og:title" content="lanpair">
+<meta property="og:description" content="Secure device pairing and messaging for your local network, in a few lines of Python.">
+<meta property="og:image" content="https://tonyd365.github.io/lanpair/demo.gif">
+<meta property="og:url" content="https://tonyd365.github.io/lanpair/">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f172a'/%3E%3Crect x='11' y='15' width='10' height='9' rx='2' fill='%23fbbf24'/%3E%3Cpath d='M13 15v-3a3 3 0 0 1 6 0v3' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #ffffff; --bg-soft: #f6f8fa; --card: #ffffff; --line: #d8dee4;
+    --text: #1f2328; --muted: #59636e; --accent: #0969da; --accent-2: #1a7f37;
+    --code-bg: #0d1117; --code-text: #e6edf3; --code-muted: #8b949e;
+    --kw: #ff7b72; --str: #a5d6ff; --fn: #d2a8ff; --cm: #8b949e;
+    --hero-1: #0f172a; --hero-2: #1e3a5f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --bg-soft: #151b23; --card: #151b23; --line: #30363d;
+      --text: #e6edf3; --muted: #9198a1; --accent: #4493f8; --accent-2: #3fb950;
+      --code-bg: #010409;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+  /* header */
+  header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); }
+  .logo:hover { text-decoration: none; }
+  .logo svg { width: 26px; height: 26px; }
+  nav a { margin-left: 22px; color: var(--muted); font-size: 15px; }
+  nav a:hover { color: var(--text); text-decoration: none; }
+
+  /* hero */
+  .hero { background: linear-gradient(135deg, var(--hero-1), var(--hero-2)); color: #f8fafc; padding: 64px 0 56px; }
+  .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height: 1.1; margin: 0 0 16px; letter-spacing: -0.02em; }
+  .hero h1 span { background: linear-gradient(90deg, #38bdf8, #34d399); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p.lead { font-size: clamp(17px, 2.2vw, 20px); color: #cbd5e1; max-width: 640px; margin: 0 0 28px; }
+  .install { display: inline-flex; align-items: center; gap: 12px; background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.18); border-radius: 10px; padding: 10px 10px 10px 16px; max-width: 100%; }
+  .install code { color: #e2e8f0; font-size: 15px; white-space: nowrap; overflow-x: auto; }
+  .install code::before { content: "$ "; color: #64748b; }
+  .copy { cursor: pointer; border: 0; border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 13px;
+    background: #38bdf8; color: #0f172a; font-weight: 600; }
+  .copy:hover { background: #7dd3fc; }
+  .cta { margin-top: 22px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 9px; font-weight: 600; font-size: 15px; }
+  .btn.primary { background: #f8fafc; color: #0f172a; }
+  .btn.ghost { border: 1px solid rgba(255,255,255,.35); color: #f8fafc; }
+  .btn:hover { text-decoration: none; filter: brightness(1.08); }
+  .demo { margin-top: 40px; border-radius: 12px; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,.45);
+    border: 1px solid rgba(255,255,255,.1); line-height: 0; }
+  .demo img { width: 100%; height: auto; display: block; }
+
+  /* sections */
+  section { padding: 64px 0; scroll-margin-top: 56px; }
+  section.soft { background: var(--bg-soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  h2 { font-size: clamp(24px, 3.2vw, 32px); margin: 0 0 10px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 32px; max-width: 680px; }
+
+  /* code */
+  .codes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .code { background: var(--code-bg); border-radius: 12px; overflow: hidden; border: 1px solid var(--line); min-width: 0; }
+  .code .bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; background: rgba(255,255,255,.04);
+    border-bottom: 1px solid rgba(255,255,255,.06); color: var(--code-muted); font-size: 13px; }
+  .code .bar i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .code .bar b { margin-left: 8px; font-weight: 500; }
+  .code pre { margin: 0; padding: 16px 18px; color: var(--code-text); font-size: 14px; line-height: 1.6; overflow-x: auto; }
+  .kw { color: var(--kw); } .str { color: var(--str); } .fn { color: var(--fn); } .cm { color: var(--cm); }
+  .note { color: var(--muted); font-size: 15px; margin-top: 18px; }
+
+  /* features */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card .ic { width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; margin-bottom: 12px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .card .ic svg { width: 21px; height: 21px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  /* security */
+  .two { display: grid; grid-template-columns: 1.1fr .9fr; gap: 32px; align-items: start; }
+  ul.checks { list-style: none; padding: 0; margin: 0; }
+  ul.checks li { padding: 10px 0 10px 32px; position: relative; border-bottom: 1px solid var(--line); }
+  ul.checks li:last-child { border-bottom: 0; }
+  ul.checks li::before { content: ""; position: absolute; left: 4px; top: 15px; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E") center/12px no-repeat; }
+  .limits { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .limits h3 { margin: 0 0 8px; font-size: 16px; }
+  .limits p, .limits li { color: var(--muted); font-size: 15px; }
+  .limits ul { padding-left: 18px; margin: 8px 0 0; }
+
+  /* docs links */
+  .docs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .docs a { display: block; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; color: var(--text); }
+  .docs a:hover { border-color: var(--accent); text-decoration: none; }
+  .docs a b { display: block; margin-bottom: 4px; }
+  .docs a span { color: var(--muted); font-size: 14px; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer a { color: var(--muted); margin-left: 18px; }
+  footer a:first-child { margin-left: 0; }
+
+  @media (max-width: 980px) {
+    .codes { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 860px) {
+    .two { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr 1fr; }
+    .docs { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 560px) {
+    nav a.hide-sm { display: none; }
+    nav a { margin-left: 16px; }
+    .grid, .docs { grid-template-columns: 1fr; }
+    .hero { padding: 44px 0 40px; }
+    section { padding: 48px 0; }
+    .install { display: flex; padding-left: 12px; gap: 8px; }
+    .install code { font-size: 13px; }
+    .code pre { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="lanpair home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0f172a"/><rect x="11" y="15" width="10" height="9" rx="2" fill="#fbbf24"/><path d="M13 15v-3a3 3 0 0 1 6 0v3" fill="none" stroke="#fbbf24" stroke-width="2"/></svg>
+      lanpair
+    </a>
+    <nav>
+      <a href="https://github.com/TonyD365/lanpair/wiki">Docs</a>
+      <a class="hide-sm" href="https://pypi.org/project/lanpair/">PyPI</a>
+      <a href="https://github.com/TonyD365/lanpair">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero" id="top">
+  <div class="wrap">
+    <h1>Pair once.<br><span>Then every message is safe.</span></h1>
+    <p class="lead">Secure device pairing and messaging for your local network, in a few lines of
+      Python. Scan a QR code once; after that, every message is encrypted, signed and checked
+      for replays before your code sees it.</p>
+    <div class="install">
+      <code id="cmd">pip install "lanpair[all]"</code>
+      <button class="copy" type="button" data-copy="cmd">Copy</button>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/TonyD365/lanpair/wiki/Quick-start">Get started</a>
+      <a class="btn ghost" href="https://github.com/TonyD365/lanpair">View on GitHub</a>
+    </div>
+    <div class="demo">
+      <img src="demo.gif" width="960" height="380" alt="Demo: the host prints a QR code, the device pairs with it, and they exchange messages; after a restart they talk again without pairing">
+    </div>
+  </div>
+</div>
+
+<section id="code">
+  <div class="wrap">
+    <h2>That is the whole setup</h2>
+    <p class="sub">A host (a front desk, a hub) and a device (a room PC, a Raspberry Pi). Each pairs
+      on its first run and remembers the other across restarts and address changes.</p>
+    <div class="codes">
+      <div class="code">
+        <div class="bar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><b>host.py</b></div>
+<pre><span class="kw">from</span> lanpair <span class="kw">import</span> Host
+
+<span class="kw">with</span> <span class="fn">Host</span>(<span class="str">"Front desk"</span>) <span class="kw">as</span> host:
+    <span class="kw">if not</span> host.devices:  <span class="cm"># first run</span>
+        host.<span class="fn">pairing_offer</span>().<span class="fn">print_qr</span>()
+        host.<span class="fn">wait_for_pairing</span>(timeout=<span class="str">300</span>)
+    <span class="kw">for</span> msg <span class="kw">in</span> host.<span class="fn">messages</span>():
+        <span class="fn">print</span>(msg.sender.name, msg.body)
+        host.<span class="fn">send</span>(msg.sender.device_id, {<span class="str">"type"</span>: <span class="str">"ok"</span>})</pre>
+      </div>
+      <div class="code">
+        <div class="bar"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i><b>device.py</b></div>
+<pre><span class="kw">from</span> lanpair <span class="kw">import</span> Device
+
+<span class="kw">with</span> <span class="fn">Device</span>(<span class="str">"Room 3"</span>) <span class="kw">as</span> dev:
+    <span class="kw">if</span> dev.host <span class="kw">is None</span>:  <span class="cm"># first run</span>
+        dev.<span class="fn">pair</span>(<span class="fn">input</span>(<span class="str">"Scanned code: "</span>))
+    dev.<span class="fn">send</span>({<span class="str">"type"</span>: <span class="str">"checkout"</span>})
+    <span class="kw">for</span> msg <span class="kw">in</span> dev.<span class="fn">messages</span>():
+        <span class="fn">print</span>(msg.body)</pre>
+      </div>
+    </div>
+    <p class="note">Need your own transport? The building blocks underneath, <code>Sealer</code> and
+      <code>Opener</code>, turn any bytes into safe envelopes.
+      <a href="https://github.com/TonyD365/lanpair/wiki/UDP-recipe">See the recipe →</a></p>
+  </div>
+</section>
+
+<section class="soft" id="features">
+  <div class="wrap">
+    <h2>What you get</h2>
+    <p class="sub">The parts you would otherwise spend a week getting right, against an attacker
+      on the same network who can read, inject, replay and drop traffic.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg></div>
+        <h3>Pairing by QR code</h3>
+        <p>The code carries the host's keys and a one-time secret. One device per code, five
+          minutes, five tries. Nobody on the network can join or pose as the host.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+        <h3>Encrypted to the recipient</h3>
+        <p>X25519 and ChaCha20-Poly1305 with a fresh key per message. Others on the network see
+          who talks to whom, not what they say.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h3>Signed and bound</h3>
+        <p>Ed25519 signatures over every message, bound to one recipient. Forged, changed or
+          redirected messages never reach your code.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg></div>
+        <h3>Replay-proof, even after restarts</h3>
+        <p>Increasing sequence numbers and timestamps, kept on disk. A recorded message stays
+          useless tomorrow, and after either side restarts.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5"/></svg></div>
+        <h3>Finds devices by itself</h3>
+        <p>mDNS discovery and a signed hello on start, so changing IP addresses and restarts
+          don't break anything. Discovery is never trusted on its own.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></svg></div>
+        <h3>Keys in the OS key store</h3>
+        <p>macOS Keychain, Windows Credential Manager or the Secret Service on Linux. Messages
+          up to 1 MiB, over UDP or TCP, chosen for you.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap two">
+    <div>
+      <h2>Built to be attacked</h2>
+      <p class="sub">A security library should be tested like one. Every change and every release
+        goes through:</p>
+      <ul class="checks">
+        <li><b>A simulated LAN with an attacker</b> before each release: four separate
+          environments, a sniffing node that replays, tampers, redirects and forges.</li>
+        <li><b>Fuzzing</b> of the code that reads untrusted input (Atheris, on every change),
+          and property-based tests (Hypothesis).</li>
+        <li><b>Tests on Linux, macOS and Windows</b>, Python 3.10 to 3.13, with strict type
+          checking.</li>
+        <li><b>Code scanning</b> with CodeQL, and the release pipeline checked by zizmor and
+          OpenSSF Scorecard.</li>
+        <li><b>Trusted publishing</b> to PyPI with attestations: no tokens, every upload approved
+          by the maintainer.</li>
+      </ul>
+    </div>
+    <div class="limits">
+      <h3>Honest limits</h3>
+      <p>Know what lanpair does not do yet:</p>
+      <ul>
+        <li>No external security review so far.</li>
+        <li>No forward secrecy if a receiver's seed is stolen later.</li>
+        <li>Message sizes and who talks to whom stay visible.</li>
+      </ul>
+      <p>Found a problem? <a href="https://github.com/TonyD365/lanpair/security/advisories/new">Report it privately</a>;
+        see the <a href="https://github.com/TonyD365/lanpair/blob/main/SECURITY.md">security policy</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="soft" id="docs">
+  <div class="wrap">
+    <h2>Documentation</h2>
+    <p class="sub">Everything lives in the wiki.</p>
+    <div class="docs">
+      <a href="https://github.com/TonyD365/lanpair/wiki/Quick-start"><b>Quick start</b><span>Two devices talking in five minutes</span></a>
+      <a href="https://github.com/TonyD365/lanpair/wiki/Host-and-Device"><b>Host and Device</b><span>Pairing, storage, options, restarts</span></a>
+      <a href="https://github.com/TonyD365/lanpair/wiki/How-it-works"><b>How it works</b><span>The envelope and every check, in order</span></a>
+      <a href="https://github.com/TonyD365/lanpair/wiki/API-reference"><b>API reference</b><span>Every public class and function</span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>lanpair is MIT-licensed open source.</span>
+    <span>
+      <a href="https://github.com/TonyD365/lanpair">GitHub</a>
+      <a href="https://pypi.org/project/lanpair/">PyPI</a>
+      <a href="https://github.com/TonyD365/lanpair/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/TonyD365/lanpair/blob/main/CONTRIBUTING.md">Contribute</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll("[data-copy]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var text = document.getElementById(button.dataset.copy).textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy"; }, 1500);
+      });
+    });
+  });
+</script>
+</body>
+</html>

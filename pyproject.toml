@@ -30,7 +30,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TonyD365/lanpair"
+Homepage = "https://tonyd365.github.io/lanpair/"
+Documentation = "https://github.com/TonyD365/lanpair/wiki"
+Source = "https://github.com/TonyD365/lanpair"
+Issues = "https://github.com/TonyD365/lanpair/issues"
+Changelog = "https://github.com/TonyD365/lanpair/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100

@@ -13,7 +13,7 @@ ci:
       - any-glob-to-any-file: [".github/**"]
 documentation:
   - changed-files:
-      - any-glob-to-any-file: ["*.md", "docs/**"]
+      - any-glob-to-any-file: ["*.md", "docs/**", "site/**"]
 dependencies:
   - changed-files:
       - any-glob-to-any-file: ["pyproject.toml"]
