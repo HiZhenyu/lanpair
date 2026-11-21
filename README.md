@@ -14,6 +14,10 @@
 
 <p align="center">
   <b>Secure device pairing and messaging for the local network, in a few lines of Python.</b>
+  <br>
+  <a href="https://tonyd365.github.io/lanpair/">Website</a> ·
+  <a href="https://github.com/TonyD365/lanpair/wiki">Docs</a> ·
+  <a href="https://pypi.org/project/lanpair/">PyPI</a>
 </p>
 
 <p align="center">

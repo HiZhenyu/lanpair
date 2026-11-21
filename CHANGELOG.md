@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Homepage at https://tonyd365.github.io/lanpair/ (`site/`, deployed by GitHub Pages), and
+  Documentation, Source, Issues and Changelog links on PyPI.
+
 ## 1.2.0 (2026-11-21)
 
 - `Host` / `Device` send messages of any size up to 1 MiB: those too big for one UDP
