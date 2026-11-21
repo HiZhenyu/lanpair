@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 (unreleased; 1.0.0rc1 for testing)
+
+The API documented in the README is now stable and follows semantic versioning.
 
 - Security: deeply nested JSON (about 100,000 levels) made `Opener.open` raise
   `RecursionError` instead of `EnvelopeError`, before any signature check, so anyone on
