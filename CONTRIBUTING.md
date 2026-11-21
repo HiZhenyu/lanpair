@@ -87,6 +87,8 @@ A few conventions:
 - Use well-reviewed primitives (`cryptography`); do not implement cryptography by hand.
 - Tests must not need the network. Every check that rejects a message has a test that shows it
   being rejected.
+- New behaviour comes with tests in the same pull request, and a fixed bug with a test that
+  fails without the fix.
 - One topic per pull request, with a description of how you checked it.
 
 ## Contribution terms
