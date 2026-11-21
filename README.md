@@ -16,6 +16,10 @@
   <b>Secure device pairing and messaging for the local network, in a few lines of Python.</b>
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/TonyD365/lanpair/main/docs/assets/demo.gif" alt="Demo: the host prints a QR code, the device pairs with it, and they exchange messages; after a restart they talk again without pairing" width="760">
+</p>
+
 ---
 
 You have a desk PC and ten room PCs. Or a Raspberry Pi and a phone. Or a game host and its
