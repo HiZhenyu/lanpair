@@ -141,10 +141,65 @@ def test_expired_and_foreign_offers_refused(tmp_path):
         dev.close()
 
 
+def test_large_messages_go_over_tcp_both_ways(pair):
+    host, dev = pair
+    big = {"blob": "x" * 200_000, "n": list(range(1000))}
+    address_before = host.devices[0].address
+    dev.send(big)
+    msg = host.receive(timeout=3)
+    assert msg is not None and msg.body == big
+    assert host.devices[0].address == address_before  # a TCP source port is not an address
+    host.send(dev.device_id, big)
+    msg = dev.receive(timeout=3)
+    assert msg is not None and msg.body == big
+
+
 def test_too_large_message_refused(pair):
     _, dev = pair
     with pytest.raises(ValueError, match="too large"):
-        dev.send("x" * 20_000)
+        dev.send("x" * 2_000_000)
+
+
+def tcp_send(port, data):
+    import socket
+
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+        c.sendall(data)
+
+
+def test_bad_tcp_frames_dropped(pair):
+    import struct
+
+    host, dev = pair
+    before = host.dropped
+    tcp_send(host.port, struct.pack(">I", 10) + b"Mshort")  # ends early
+    tcp_send(host.port, struct.pack(">I", 50_000_000))  # claims 50 MB
+    tcp_send(host.port, struct.pack(">I", 0))
+    tcp_send(host.port, struct.pack(">I", 6) + b"P{...}")  # pairing only over UDP
+    tcp_send(host.port, struct.pack(">I", 5) + b"Mjunk")
+    assert wait(lambda: host.dropped >= before + 5)
+    dev.send("x" * 20_000)
+    assert host.receive(timeout=3).body == "x" * 20_000
+
+
+def test_idle_tcp_connections_do_not_block_others(pair):
+    import socket
+
+    host, dev = pair
+    idle = [socket.create_connection(("127.0.0.1", host.port)) for _ in range(4)]
+    try:
+        dev.send("y" * 20_000)
+        assert host.receive(timeout=3).body == "y" * 20_000
+    finally:
+        for c in idle:
+            c.close()
+
+
+def test_large_send_to_a_peer_that_is_down_raises(pair):
+    host, dev = pair
+    host.close()
+    with pytest.raises(OSError):
+        dev.send("z" * 20_000)
 
 
 def test_send_before_pairing(tmp_path):

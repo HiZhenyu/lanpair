@@ -84,6 +84,7 @@ restarts. Behind it:
 - **Keys in the OS key store**, peers and replay counters on disk, so pairing survives
   restarts and old messages stay rejected.
 - **Discovery with mDNS**, so changing IP addresses don't matter.
+- **Any size up to 1 MiB**: small messages go by UDP, larger ones over TCP, automatically.
 - **Every message** encrypted, signed, bound to its recipient and replay-checked before
   `messages()` hands it to you.
 
@@ -196,7 +197,7 @@ key. The full threat model, the reasoning behind each layer, and the known limit
 | QR code pairing | ✅ 1.1 |
 | `Host` / `Device` API | ✅ 1.1 |
 | 6-digit code pairing with a PAKE | 🔜 next |
-| TCP transport for large messages | 🔜 |
+| TCP for large messages (up to 1 MiB) | ✅ 1.2 |
 
 Want to help with one of these? See the [open issues](https://github.com/TonyD365/lanpair/issues).
 

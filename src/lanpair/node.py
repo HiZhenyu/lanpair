@@ -9,7 +9,8 @@ the OS key store, and replay protection that survives restarts::
     for msg in host.messages():               # dev.pair(scanned_text)
         print(msg.sender.name, msg.body)      # dev.send({"type": "close"})
 
-Each message travels in one UDP datagram, so keep bodies under about 6 KB.
+Small messages travel in one UDP datagram; larger ones (over about 6 KB, up to 1 MiB)
+go over a short TCP connection to the same port, with the same checks.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import os
 import queue
 import re
 import socket
+import struct
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -27,14 +29,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
-from .envelope import EnvelopeError, JsonFileSeqStore, Opener, Sealer
+from .envelope import DEFAULT_MAX_SIZE, EnvelopeError, JsonFileSeqStore, Opener, Sealer
 from .identity import Identity, PublicIdentity
 from .pairing import PairingError, PairingOffer, PairingSession, make_request
 
 _MSG = b"M"  # an envelope
 _PAIR = b"P"  # a pairing request
 MAX_DATAGRAM = 9000  # bytes; macOS refuses larger UDP datagrams by default
+MAX_MESSAGE = DEFAULT_MAX_SIZE  # bytes of envelope; what a receiver accepts by default
 _POLL = 0.25  # seconds; how quickly the receive thread notices close()
+_TCP_TIMEOUT = 5.0  # seconds a TCP connection may take to deliver its message
+_TCP_MAX_CONNECTIONS = 16  # handled at once; more are closed right away
+_LEN = struct.Struct(">I")  # TCP frame: 4-byte big-endian length, then the message
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,17 @@ def _lan_ip() -> str:
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def _recv_exactly(conn: socket.socket, n: int) -> bytes:
+    chunks, got = [], 0
+    while got < n:
+        chunk = conn.recv(min(n - got, 65536))
+        if not chunk:
+            raise ValueError("connection closed early")
+        chunks.append(chunk)
+        got += len(chunk)
+    return b"".join(chunks)
 
 
 def _split(address: str) -> tuple[str, int]:
@@ -170,12 +187,13 @@ class _Node:
         for peer in self._book.all():
             self._opener.add_peer(peer.identity)
         self._sealer = Sealer(identity)
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # All interfaces by default: other devices on the LAN must reach this one. Every
         # datagram is authenticated before use. Pass bind="192.168.1.10" to listen on one
         # interface only (e.g. not on a VPN or a public network).
         self._bind(bind, port)
         self._sock.settimeout(_POLL)
+        self._tcp.settimeout(_POLL)
+        self._tcp_slots = threading.BoundedSemaphore(_TCP_MAX_CONNECTIONS)
         self._announce = announce
         self._announcer: Any = None
         self._inbox: queue.Queue[Message] = queue.Queue()
@@ -185,20 +203,35 @@ class _Node:
         """Datagrams refused so far (forged, tampered, replayed, garbage, ...)."""
 
     def _bind(self, bind: str, port: int) -> None:
-        """Bind, reusing the port from the last run so peers' stored addresses stay right."""
+        """Bind UDP and TCP to one port, reusing the port from the last run if it is free,
+        so peers' stored addresses stay right."""
         state = self.state_dir / "node.json"
+        wanted = port
         if port == 0:
             try:
                 saved = json.loads(state.read_text(encoding="utf-8")).get("port", 0)
-                port = saved if isinstance(saved, int) and 0 < saved < 65536 else 0
+                wanted = saved if isinstance(saved, int) and 0 < saved < 65536 else 0
             except (FileNotFoundError, ValueError, AttributeError):
-                port = 0
+                wanted = 0
+        for attempt in range(20):
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                self._sock.bind((bind, port))
-            except OSError:  # taken by something else since: take any free port
-                self._sock.bind((bind, 0))
+                udp.bind((bind, wanted))
+                tcp.bind((bind, udp.getsockname()[1]))
+                tcp.listen(_TCP_MAX_CONNECTIONS)
+            except OSError:
+                udp.close()
+                tcp.close()
+                if port != 0 and attempt == 0:
+                    raise  # an explicitly requested port must be free
+                wanted = 0  # taken by something else: any port free for both
+                continue
+            self._sock, self._tcp = udp, tcp
+            break
         else:
-            self._sock.bind((bind, port))
+            raise OSError("no port free for both UDP and TCP")
+        port = wanted
         self._port = int(self._sock.getsockname()[1])
         if self._port != port:
             state.parent.mkdir(parents=True, exist_ok=True)
@@ -225,6 +258,8 @@ class _Node:
             self._announcer = Announcer(self.identity.public, self.name, self.port, app=self.app)
         self._thread = threading.Thread(target=self._run, name=f"lanpair-{self.name}", daemon=True)
         self._thread.start()
+        self._tcp_thread = threading.Thread(target=self._accept, name="lanpair-tcp", daemon=True)
+        self._tcp_thread.start()
         if self._book.all():
             threading.Thread(target=self._greet, name="lanpair-greet", daemon=True).start()
 
@@ -256,10 +291,12 @@ class _Node:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+            self._tcp_thread.join(timeout=5)
         if self._announcer is not None:
             self._announcer.close()
             self._announcer = None
         self._sock.close()
+        self._tcp.close()
 
     def __enter__(self: _N) -> _N:
         self.start()
@@ -301,9 +338,45 @@ class _Node:
             except (EnvelopeError, PairingError, ValueError):
                 self.dropped += 1
 
-    def _handle(self, data: bytes, source: str) -> None:
+    def _accept(self) -> None:
+        """TCP: one length-prefixed message per connection, for messages too big for UDP."""
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._tcp.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                if self._stop.is_set():
+                    return
+                continue
+            if not self._tcp_slots.acquire(blocking=False):
+                conn.close()  # too many at once: someone is holding connections open
+                self.dropped += 1
+                continue
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(_TCP_TIMEOUT)
+            (length,) = _LEN.unpack(_recv_exactly(conn, _LEN.size))
+            if not 0 < length <= self._opener.max_size + 1:
+                raise ValueError("TCP message too large")
+            data = _recv_exactly(conn, length)
+            if data[:1] != _MSG:
+                raise ValueError("only messages travel over TCP")
+            # The sender's TCP port is temporary: don't move its address (learn=False).
+            self._handle(data, None)
+        except (EnvelopeError, PairingError, ValueError, OSError, struct.error):
+            self.dropped += 1
+        finally:
+            conn.close()
+            self._tcp_slots.release()
+
+    def _handle(self, data: bytes, source: str | None) -> None:
         kind, payload = data[:1], data[1:]
         if kind == _PAIR:
+            if source is None:
+                raise ValueError("pairing requests travel over UDP")
             self._on_pair_request(payload, source)
             return
         if kind != _MSG:
@@ -312,7 +385,7 @@ class _Node:
         known = self._book.get(ident.device_id)
         if known is None:  # unpaired between the check and now
             raise ValueError("unknown peer")
-        peer = PeerInfo(known.device_id, known.name, known.identity, source)
+        peer = PeerInfo(known.device_id, known.name, known.identity, source or known.address)
         self._book.put(peer)  # follow the peer to its current address
         if not isinstance(body, dict):
             raise ValueError("not a lanpair message")
@@ -347,9 +420,16 @@ class _Node:
 
     def _send(self, peer: PeerInfo, body: dict[str, Any]) -> None:
         data = _MSG + self._sealer.seal(peer.identity, body)
-        if len(data) > MAX_DATAGRAM:
-            raise ValueError(f"message too large for one datagram ({len(data)} bytes)")
-        self._sock.sendto(data, _split(self._resolve(peer)))
+        address = _split(self._resolve(peer))
+        if len(data) <= MAX_DATAGRAM:
+            self._sock.sendto(data, address)
+            return
+        if len(data) - 1 > MAX_MESSAGE:
+            raise ValueError(f"message too large ({len(data)} bytes; the limit is 1 MiB)")
+        # Too big for one datagram: one TCP connection to the peer's port. Raises OSError
+        # (e.g. ConnectionRefusedError, TimeoutError) if the peer can't be reached.
+        with socket.create_connection(address, timeout=_TCP_TIMEOUT) as conn:
+            conn.sendall(_LEN.pack(len(data)) + data)
 
 
 class Host(_Node):
