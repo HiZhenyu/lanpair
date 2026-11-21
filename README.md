@@ -6,7 +6,8 @@
   <a href="https://github.com/TonyD365/lanpair/actions/workflows/ci.yml"><img src="https://github.com/TonyD365/lanpair/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/TonyD365/lanpair/actions/workflows/security.yml"><img src="https://github.com/TonyD365/lanpair/actions/workflows/security.yml/badge.svg" alt="Security"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/TonyD365/lanpair"><img src="https://api.scorecard.dev/projects/github.com/TonyD365/lanpair/badge" alt="OpenSSF Scorecard"></a>
-  <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue" alt="Python 3.10 to 3.13">
+  <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/v/lanpair" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/pyversions/lanpair" alt="Python versions"></a>
   <img src="https://img.shields.io/badge/typed-mypy%20strict-informational" alt="Typed, mypy strict">
   <a href="https://github.com/TonyD365/lanpair/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
@@ -115,9 +116,13 @@ more.
 | Replays after you restart the app | Sequence numbers survive restarts (time-based sender, persistent or start-window receiver) |
 | Replays an old message much later | Timestamps outside ±30 s are refused |
 | Sends junk to crash your parser | Strict validation; everything becomes `EnvelopeError` |
+| Sends huge or deeply nested packets | Size limit (1 MiB by default) and nesting checks before any parsing work |
 
-Also: fully typed (mypy strict), one dependency ([`cryptography`](https://cryptography.io)),
-tested on Linux, macOS and Windows with Python 3.10 to 3.13.
+Also: fully typed (mypy strict), one required dependency
+([`cryptography`](https://cryptography.io)), tested on Linux, macOS and Windows with
+Python 3.10 to 3.13, property-tested with Hypothesis, and fuzzed with Atheris on every
+change. Releases are also checked in a simulated LAN ([`e2e/`](https://github.com/TonyD365/lanpair/tree/main/e2e)) with an attacker
+node that sniffs, replays, tampers, redirects and forges traffic.
 
 ## How it works
 
@@ -181,8 +186,14 @@ Want to help with one of these? See the [open issues](https://github.com/TonyD36
 ## Install
 
 ```bash
-pip install lanpair
+pip install lanpair                        # core: identities and secure envelopes
+pip install "lanpair[keyring]"             # + keys in the OS key store
+pip install "lanpair[discovery]"           # + mDNS discovery
+pip install "lanpair[keyring,discovery]"   # everything
 ```
+
+Python 3.10 or newer. lanpair follows [semantic versioning](https://semver.org): no
+breaking changes within 1.x.
 
 ## Contributing
 
@@ -193,7 +204,7 @@ described in [SECURITY.md](https://github.com/TonyD365/lanpair/blob/main/SECURIT
 ```bash
 git clone https://github.com/TonyD365/lanpair && cd lanpair
 pip install -e ".[dev]"
-pytest && ruff check . && mypy src
+pytest && ruff check . && ruff format --check . && mypy src
 ```
 
 ## License
