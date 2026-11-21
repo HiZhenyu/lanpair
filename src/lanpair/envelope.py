@@ -41,6 +41,7 @@ from .identity import Identity, PublicIdentity
 
 VERSION = 2
 DEFAULT_MAX_SKEW = 30.0  # seconds
+DEFAULT_MAX_SIZE = 1 << 20  # bytes; larger envelopes are refused before parsing
 _NONCE = bytes(12)  # every message has its own key, so a fixed nonce is safe
 
 
@@ -199,6 +200,7 @@ class Opener:
     peers: dict[str, PublicIdentity] = field(default_factory=dict)
     clock: Callable[[], float] = time.time
     max_skew: float = DEFAULT_MAX_SKEW
+    max_size: int = DEFAULT_MAX_SIZE
     store: SeqStore = field(default_factory=MemorySeqStore)
     _started: float = field(init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -214,13 +216,15 @@ class Opener:
         self.store.forget(device_id)
 
     def open(self, raw: bytes) -> tuple[PublicIdentity, Any]:
+        if len(raw) > self.max_size:
+            raise EnvelopeError("envelope too large")
         try:
             msg = json.loads(raw)
             sig = base64.b64decode(msg.pop("sig"), validate=True)
             fields = _signed_fields(
                 msg["from"], msg["to"], msg["ts"], msg["seq"], msg["eph"], msg["ct"]
             )
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as e:
             raise EnvelopeError("malformed envelope") from e
         if msg.get("v") != VERSION or set(msg) != set(fields):
             raise EnvelopeError("unsupported envelope")
@@ -267,5 +271,5 @@ class Opener:
             key = _body_key(self.me.exchange(eph_pub), eph_pub, box)
             plaintext = ChaCha20Poly1305(key).decrypt(_NONCE, ct, _header(fields))
             return json.loads(plaintext)["body"]
-        except (ValueError, KeyError, TypeError, InvalidTag) as e:
+        except (ValueError, KeyError, TypeError, InvalidTag, RecursionError) as e:
             raise EnvelopeError("cannot decrypt") from e

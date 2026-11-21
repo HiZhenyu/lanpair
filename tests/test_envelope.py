@@ -179,3 +179,20 @@ def test_non_finite_timestamp_rejected(setup, bad):
     raw = raw.replace(json.dumps(msg["ts"]).encode(), bad)
     with pytest.raises(EnvelopeError, match="malformed"):
         opener.open(raw)
+
+
+@pytest.mark.parametrize("raw", [b"[" * 200_000, b'{"a":' * 200_000])
+def test_deeply_nested_json_rejected_not_crash(setup, raw):
+    *_, opener = setup
+    opener.max_size = 10 << 20
+    with pytest.raises(EnvelopeError, match="malformed"):
+        opener.open(raw)
+
+
+def test_oversized_envelope_rejected(setup):
+    _, _, room3, _, sealer, opener = setup
+    raw = sealer.seal(room3.public, {"blob": "x" * 2_000_000})
+    with pytest.raises(EnvelopeError, match="too large"):
+        opener.open(raw)
+    opener.max_size = 4 << 20
+    assert opener.open(raw)[1]["blob"] == "x" * 2_000_000

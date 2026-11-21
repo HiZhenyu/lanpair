@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Security: deeply nested JSON (about 100,000 levels) made `Opener.open` raise
+  `RecursionError` instead of `EnvelopeError`, before any signature check, so anyone on
+  the LAN could crash a receive loop that only catches `EnvelopeError`. It is now rejected
+  as malformed, and envelopes over `Opener.max_size` (1 MiB by default) are refused before
+  parsing. Found by the simulated-network test.
+
 ## 0.1.0 (2026-11-21)
 
 First release: the cryptographic core. Discovery, pairing and the high-level `Host` /
