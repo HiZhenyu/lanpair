@@ -51,7 +51,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - name: Run the assistant for fork pull requests reviewed in the last 15 minutes
+      - name: Run the assistant for recently reviewed fork pull requests and stuck statuses
         env:
           GH_TOKEN: ${{ secrets.AGENT_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -64,6 +64,21 @@ jobs:
               -q '[.[] | .submitted_at // empty] | max // ""')
             if [ -n "$last" ] && [[ "$last" > "$since" ]]; then
               echo "pull request $n: reviewed at $last"
+              gh workflow run pr-assistant.yml --ref main -f number="$n"
+            fi
+          done
+          # Safety net: a "lanpair checks" status left pending for over 5 minutes with nothing
+          # running for that commit missed its last update; run the assistant for it again.
+          stale=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          for n in $(gh pr list --state open --limit 100 --json number -q '.[].number'); do
+            head=$(gh pr view "$n" --json headRefOid -q .headRefOid)
+            since=$(gh api "repos/$GH_REPO/commits/$head/statuses" \
+              -q '[.[] | select(.context == "lanpair checks")][0] | select(.state == "pending") | .updated_at')
+            [ -n "$since" ] && [[ "$since" < "$stale" ]] || continue
+            busy=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$head&per_page=100" \
+              -q '[.workflow_runs[] | select(.status != "completed")] | length')
+            if [ "$busy" = 0 ]; then
+              echo "pull request $n: pending since $since, nothing running"
               gh workflow run pr-assistant.yml --ref main -f number="$n"
             fi
           done
@@ -98,6 +113,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          # The workflow run that started this one has finished, even if GitHub's check list
+          # still shows its jobs as running for a few seconds.
+          DONE_SUITE: ${{ github.event.workflow_run.check_suite_id || 0 }}
+          DONE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           SERVER: ${{ github.server_url }}
         run: |
           set -euo pipefail
@@ -122,7 +141,9 @@ jobs:
           # Every check on the latest commit.
           # Only the latest run of each check (a re-run replaces the earlier result), not this job.
           gh api "repos/$GH_REPO/commits/$head/check-runs?per_page=100" \
-            -q '[.check_runs[] | select(.name != "comment")] | group_by(.name) | map(max_by(.started_at // ""))[]
+            -q '[.check_runs[] | select(.name != "comment")
+                | if .check_suite.id == (env.DONE_SUITE | tonumber) then .status = "completed" | .conclusion //= env.DONE_CONCLUSION else . end]
+                | group_by(.name) | map(max_by(.started_at // ""))[]
                 | [.name, .status, (.conclusion // ""), .html_url] | @tsv' > checks.tsv || true
           total=$(wc -l < checks.tsv | tr -d ' ')
           # Cancelled is not the change's fault: it counts as an internal error, not a failure.
