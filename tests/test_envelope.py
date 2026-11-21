@@ -196,3 +196,48 @@ def test_oversized_envelope_rejected(setup):
         opener.open(raw)
     opener.max_size = 4 << 20
     assert opener.open(raw)[1]["blob"] == "x" * 2_000_000
+
+
+# --- forward secrecy: session keys ------------------------------------------------------
+
+
+def test_session_key_needed_and_seed_alone_cannot_decrypt(setup):
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    clock, desk, room3, _, sealer, opener = setup
+    session = opener.add_session_key(X25519PrivateKey.generate())
+    raw = sealer.seal(room3.public, {"secret": 1}, box_key=session)
+    # Someone who later steals room3's seed, but not the in-memory session key:
+    thief = Opener(Identity.from_seed(room3.seed()), clock=clock)
+    thief.add_peer(desk.public)
+    thief._started = clock.t - 100  # past its start-up window
+    with pytest.raises(EnvelopeError, match="cannot decrypt"):
+        thief.open(raw)
+    opened = opener.open_detailed(raw)
+    assert opened.body == {"secret": 1} and opened.session_key == session
+
+
+def test_removed_session_key_cannot_decrypt(setup):
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    _, _, room3, _, sealer, opener = setup
+    session = opener.add_session_key(X25519PrivateKey.generate())
+    raw = sealer.seal(room3.public, "x", box_key=session)
+    opener.remove_session_key(session)
+    with pytest.raises(EnvelopeError, match="cannot decrypt"):
+        opener.open(raw)
+
+
+def test_long_term_key_still_works_with_session_keys(setup):
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    _, _, room3, _, sealer, opener = setup
+    opener.add_session_key(X25519PrivateKey.generate())
+    opened = opener.open_detailed(sealer.seal(room3.public, "x"))
+    assert opened.body == "x" and opened.session_key is None
+
+
+def test_bad_box_key_rejected(setup):
+    _, _, room3, _, sealer, _ = setup
+    with pytest.raises(ValueError):
+        sealer.seal(room3.public, "x", box_key=b"short")

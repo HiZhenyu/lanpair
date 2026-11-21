@@ -24,10 +24,13 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
+
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from .envelope import DEFAULT_MAX_SIZE, EnvelopeError, JsonFileSeqStore, Opener, Sealer
 from .identity import Identity, PublicIdentity
@@ -41,6 +44,11 @@ _POLL = 0.25  # seconds; how quickly the receive thread notices close()
 _TCP_TIMEOUT = 5.0  # seconds a TCP connection may take to deliver its message
 _TCP_MAX_CONNECTIONS = 16  # handled at once; more are closed right away
 _LEN = struct.Struct(">I")  # TCP frame: 4-byte big-endian length, then the message
+SESSION_ROTATE = 600.0  # seconds between new session keys (forward secrecy)
+_SESSION_KEEP = 2  # session keys kept: the current one and the one before it
+_REANNOUNCE = 10.0  # seconds between telling one peer our session key again
+_OUTBOX_KEEP = 16  # recent messages kept per peer, to resend if it couldn't decrypt one
+_OUTBOX_AGE = 60.0  # seconds they are kept
 
 
 @dataclass(frozen=True)
@@ -201,6 +209,19 @@ class _Node:
         self._thread: threading.Thread | None = None
         self.dropped = 0
         """Datagrams refused so far (forged, tampered, replayed, garbage, ...)."""
+        # Forward secrecy: short-lived session keys, in memory only. Peers encrypt to our
+        # current one; once a key is dropped, nothing sent to it can be decrypted again,
+        # not even with this device's seed.
+        self._session_rotate = SESSION_ROTATE
+        self._sessions: list[tuple[float, bytes]] = []  # (created, public), oldest first
+        self._peer_sessions: dict[str, bytes] = {}  # device id -> its current session key
+        self._announced: dict[str, float] = {}  # device id -> when we last told it ours
+        # Recent messages per peer by sequence number, so one it could not decrypt (sealed
+        # to a session key it lost in a restart) can be sealed again to its new key.
+        self._outbox: dict[str, dict[int, tuple[float, dict[str, Any]]]] = {}
+        self._outbox_lock = threading.Lock()
+        self._session_lock = threading.Lock()
+        self._rotate_session()
 
     def _bind(self, bind: str, port: int) -> None:
         """Bind UDP and TCP to one port, reusing the port from the last run if it is free,
@@ -241,6 +262,90 @@ class _Node:
         if self._port != port:
             state.parent.mkdir(parents=True, exist_ok=True)
             state.write_text(json.dumps({"port": self.port}), encoding="utf-8")
+
+    # --- session keys (forward secrecy) -------------------------------------------------
+
+    def _rotate_session(self) -> bytes:
+        """Start a new session key and drop the oldest; returns the new public key."""
+        with self._session_lock:
+            public = self._opener.add_session_key(X25519PrivateKey.generate())
+            self._sessions.append((time.monotonic(), public))
+            while len(self._sessions) > _SESSION_KEEP:
+                _, old = self._sessions.pop(0)
+                self._opener.remove_session_key(old)
+            return public
+
+    @property
+    def _session_key(self) -> bytes:
+        with self._session_lock:
+            return self._sessions[-1][1]
+
+    def _session_field(self) -> str:
+        return base64.b64encode(self._session_key).decode()
+
+    def _maybe_rotate(self) -> None:
+        with self._session_lock:
+            due = time.monotonic() - self._sessions[-1][0] >= self._session_rotate
+        if due:
+            self._rotate_session()
+            threading.Thread(
+                target=self._tell_all_sessions, name="lanpair-rekey", daemon=True
+            ).start()
+
+    def _tell_all_sessions(self) -> None:
+        for peer in self._book.all():
+            if self._stop.is_set():
+                return
+            self._tell_session(peer, force=True)
+
+    def _tell_session(
+        self, peer: PeerInfo, *, force: bool = False, retry: int | None = None
+    ) -> None:
+        """Tell *peer* our current session key (at most every few seconds unless forced, or
+        asking it to resend message *retry*)."""
+        now = time.monotonic()
+        if retry is None and not force:
+            if now - self._announced.get(peer.device_id, -1e9) < _REANNOUNCE:
+                return
+        self._announced[peer.device_id] = now
+        body: dict[str, Any] = {"lanpair": "key", "session": self._session_field()}
+        if retry is not None:
+            body["retry"] = retry
+        try:
+            self._send(peer, body)
+        except (OSError, LookupError, ValueError):
+            pass  # unreachable now; it gets the key with our next hello or reply
+
+    def _learn_session(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        value = body.get("session")
+        if not isinstance(value, str):
+            return
+        try:
+            key = base64.b64decode(value, validate=True)
+        except ValueError:
+            return
+        if len(key) != 32:
+            return
+        self._peer_sessions[peer.device_id] = key
+        retry = body.get("retry")
+        if type(retry) is int:
+            with self._outbox_lock:
+                kept = self._outbox.get(peer.device_id, {}).pop(retry, None)
+            if kept is not None:
+                try:
+                    self._send(peer, kept[1])  # sealed again, to its new session key
+                except (OSError, LookupError, ValueError):
+                    pass
+
+    def _remember(self, peer: PeerInfo, seq: int, body: dict[str, Any]) -> None:
+        now = time.monotonic()
+        with self._outbox_lock:
+            box = self._outbox.setdefault(peer.device_id, {})
+            box[seq] = (now, body)
+            for old in [s for s, (t, _) in box.items() if now - t > _OUTBOX_AGE]:
+                del box[old]
+            while len(box) > _OUTBOX_KEEP:
+                del box[min(box)]
 
     # --- lifecycle ---------------------------------------------------------------------
 
@@ -288,7 +393,7 @@ class _Node:
                     )
                     self._book.put(peer)
             try:
-                self._send(peer, {"lanpair": "hello"})
+                self._send(peer, {"lanpair": "hello", "session": self._session_field()})
             except (OSError, LookupError, ValueError):
                 pass  # unreachable now; it will find us through its own hello or mDNS
 
@@ -328,6 +433,7 @@ class _Node:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._maybe_rotate()
             try:
                 data, addr = self._sock.recvfrom(65535)
             except TimeoutError:
@@ -386,7 +492,14 @@ class _Node:
             return
         if kind != _MSG:
             raise ValueError("unknown datagram")
-        ident, body = self._opener.open(payload)
+        try:
+            ident, body, used = self._opener.open_detailed(payload)
+        except EnvelopeError as e:
+            if str(e) == "cannot decrypt":
+                # Signed by a paired peer (that check comes first), but encrypted to a
+                # session key we already dropped: it has missed our new one.
+                self._reannounce_to_sender(payload)
+            raise
         known = self._book.get(ident.device_id)
         if known is None:  # unpaired between the check and now
             raise ValueError("unknown peer")
@@ -394,10 +507,26 @@ class _Node:
         self._book.put(peer)  # follow the peer to its current address
         if not isinstance(body, dict):
             raise ValueError("not a lanpair message")
+        if "lanpair" in body:
+            self._learn_session(peer, body)
+        # A peer that uses session keys but encrypted this to an old one, or to our
+        # long-term key, doesn't have our current session key: send it.
+        if peer.device_id in self._peer_sessions and used != self._session_key:
+            self._tell_session(peer)
         if "msg" in body:
             self._inbox.put(Message(peer, body["msg"]))
         elif "lanpair" in body:
             self._on_control(peer, body)
+
+    def _reannounce_to_sender(self, payload: bytes) -> None:
+        try:
+            env = json.loads(payload)
+            sender, seq = env["from"], env["seq"]
+        except (ValueError, KeyError, TypeError, RecursionError):
+            return
+        peer = self._book.get(sender) if isinstance(sender, str) else None
+        if peer is not None and type(seq) is int:
+            self._tell_session(peer, retry=seq)
 
     def _on_pair_request(self, payload: bytes, source: str) -> None:
         raise PairingError("this device does not accept pairing requests")
@@ -424,7 +553,11 @@ class _Node:
         raise LookupError(f"don't know where {peer.name or peer.device_id} is")
 
     def _send(self, peer: PeerInfo, body: dict[str, Any]) -> None:
-        data = _MSG + self._sealer.seal(peer.identity, body)
+        session = self._peer_sessions.get(peer.device_id)
+        sealed = self._sealer.seal(peer.identity, body, box_key=session)
+        if session is not None and "msg" in body:
+            self._remember(peer, json.loads(sealed)["seq"], body)
+        data = _MSG + sealed
         address = _split(self._resolve(peer))
         if len(data) <= MAX_DATAGRAM:
             self._sock.sendto(data, address)
@@ -504,7 +637,7 @@ class Host(_Node):
         known = self._book.get(ident.device_id)
         peer = PeerInfo(ident.device_id, name, ident, source)
         self._add_peer(peer)
-        self._send(peer, {"lanpair": "paired", "name": self.name})
+        self._send(peer, {"lanpair": "paired", "name": self.name, "session": self._session_field()})
         if known is None:
             self._paired_events.put(peer)
 
@@ -561,6 +694,7 @@ class Device(_Node):
                 self._host_id = host.device_id
                 result = self._book.get(host.device_id)
                 assert result is not None
+                self._tell_session(result, force=True)  # our session key, for forward secrecy
                 return result
         if previous is None or previous.device_id != host.device_id:
             self._book.remove(host.device_id)

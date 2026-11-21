@@ -309,3 +309,66 @@ def test_port_kept_after_rejected_tcp_frames(pair, tmp_path):
         assert host2.port == port
     finally:
         host2.close()
+
+
+# --- forward secrecy --------------------------------------------------------------------
+
+
+def test_peers_learn_each_others_session_keys(pair):
+    host, dev = pair
+    assert wait(lambda: dev._peer_sessions.get(host.device_id) == host._session_key)
+    assert wait(lambda: host._peer_sessions.get(dev.device_id) == dev._session_key)
+
+
+def test_messages_cannot_be_read_with_the_seed_alone(pair):
+    from lanpair import EnvelopeError, Opener
+
+    host, dev = pair
+    assert wait(lambda: host.device_id in dev._peer_sessions)
+    session = dev._peer_sessions[host.device_id]
+    recorded = dev._sealer.seal(host.identity.public, {"msg": "secret"}, box_key=session)
+    thief = Opener(type(host.identity).from_seed(host.identity.seed()))
+    thief.add_peer(dev.identity.public)
+    thief._started = 0  # skip the start-up window: only decryption matters here
+    with pytest.raises(EnvelopeError, match="cannot decrypt"):
+        thief.open(recorded)
+
+
+def test_session_keys_rotate_and_old_ones_are_dropped(pair):
+    host, dev = pair
+    assert wait(lambda: host.device_id in dev._peer_sessions)
+    first = host._session_key
+    host._session_rotate = 0.3
+    assert wait(lambda: first not in host._opener._session_keys, timeout=5)
+    assert wait(lambda: dev._peer_sessions.get(host.device_id) == host._session_key)
+    host._session_rotate = 600.0
+    dev.send("after rotation")
+    assert host.receive(timeout=3).body == "after rotation"
+
+
+def test_message_to_a_restarted_peer_is_resent_to_its_new_key(pair, tmp_path):
+    host, dev = pair
+    assert wait(lambda: host.device_id in dev._peer_sessions)
+    identity = host.identity
+    host.close()
+    host2 = make(Host, "desk", tmp_path, identity=identity)  # new session keys
+    try:
+        dev.send("right after the restart")  # still sealed to the old session key
+        msg = host2.receive(timeout=5)
+        assert msg is not None and msg.body == "right after the restart"
+        assert host2.receive(timeout=1) is None  # delivered once
+    finally:
+        host2.close()
+
+
+def test_works_with_a_peer_without_session_keys(pair):
+    host, dev = pair
+    # As a 1.2 device would: never announces or learns session keys.
+    dev._tell_session = lambda *a, **k: None
+    dev._learn_session = lambda *a, **k: None
+    dev._peer_sessions.clear()
+    host._peer_sessions.pop(dev.device_id, None)
+    dev.send("old style")
+    assert host.receive(timeout=3).body == "old style"
+    host.send(dev.device_id, "reply")
+    assert dev.receive(timeout=3).body == "reply"

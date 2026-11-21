@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
@@ -171,14 +171,24 @@ class Sealer:
             self._seq = max(self._seq + 1, int(self.clock() * 1_000_000))
             return self._seq
 
-    def seal(self, recipient: PublicIdentity, body: Any) -> bytes:
+    def seal(self, recipient: PublicIdentity, body: Any, *, box_key: bytes | None = None) -> bytes:
+        """Encrypt *body* to *recipient* and sign it.
+
+        By default the body is encrypted to the recipient's long-term key. Pass the
+        recipient's current session key as *box_key* (see :meth:`Opener.add_session_key`)
+        for forward secrecy: once the recipient deletes that session key, the message
+        can no longer be decrypted, not even with the recipient's seed.
+        """
+        target = recipient.box_key if box_key is None else box_key
+        if len(target) != 32:
+            raise ValueError("box_key must be a 32-byte X25519 public key")
         plaintext = _canonical({"body": body})
         eph = X25519PrivateKey.generate()
         eph_pub = eph.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         )
-        shared = eph.exchange(X25519PublicKey.from_public_bytes(recipient.box_key))
-        key = _body_key(shared, eph_pub, recipient.box_key)
+        shared = eph.exchange(X25519PublicKey.from_public_bytes(target))
+        key = _body_key(shared, eph_pub, target)
         fields = _signed_fields(
             self.identity.public.device_id,
             recipient.device_id,
@@ -192,6 +202,14 @@ class Sealer:
         return _canonical({**fields, "sig": _b64(sig)})
 
 
+class Opened(NamedTuple):
+    """What :meth:`Opener.open_detailed` returns."""
+
+    sender: PublicIdentity
+    body: Any
+    session_key: bytes | None  # public session key that decrypted it, or None (long-term)
+
+
 @dataclass
 class Opener:
     """Verifies and decrypts incoming messages for this device against paired peers."""
@@ -203,6 +221,7 @@ class Opener:
     max_size: int = DEFAULT_MAX_SIZE
     store: SeqStore = field(default_factory=MemorySeqStore)
     _started: float = field(init=False)
+    _session_keys: dict[bytes, X25519PrivateKey] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
@@ -211,11 +230,36 @@ class Opener:
     def add_peer(self, peer: PublicIdentity) -> None:
         self.peers[peer.device_id] = peer
 
+    def add_session_key(self, key: X25519PrivateKey) -> bytes:
+        """Also accept messages encrypted to this session key; returns its public key.
+
+        Session keys give forward secrecy: hand the public key to your peers (inside a
+        sealed message), let them pass it as ``Sealer.seal(..., box_key=...)``, and remove
+        the key after a while. Keep session keys in memory only.
+        """
+        public = key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        with self._lock:
+            self._session_keys[public] = key
+        return public
+
+    def remove_session_key(self, public: bytes) -> None:
+        """Forget a session key: messages encrypted to it can no longer be opened."""
+        with self._lock:
+            self._session_keys.pop(public, None)
+
     def remove_peer(self, device_id: str) -> None:
         self.peers.pop(device_id, None)
         self.store.forget(device_id)
 
     def open(self, raw: bytes) -> tuple[PublicIdentity, Any]:
+        """Check and decrypt *raw*; returns the sender and the body, or raises EnvelopeError."""
+        opened = self.open_detailed(raw)
+        return opened.sender, opened.body
+
+    def open_detailed(self, raw: bytes) -> Opened:
+        """Like :meth:`open`, and also says which session key decrypted it (None: long-term)."""
         if len(raw) > self.max_size:
             raise EnvelopeError("envelope too large")
         try:
@@ -259,17 +303,35 @@ class Opener:
         with self._lock:
             if seq <= self.store.get(peer.device_id):
                 raise EnvelopeError("replayed message")
-            body = self._decrypt(fields)
+            body, used = self._decrypt(fields)
             self.store.set(peer.device_id, seq)
-        return peer, body
+        return Opened(peer, body, used)
 
-    def _decrypt(self, fields: dict[str, Any]) -> Any:
+    def _decrypt(self, fields: dict[str, Any]) -> tuple[Any, bytes | None]:
+        """Try the session keys, then the long-term key. Called with the lock held."""
         try:
             eph_pub = base64.b64decode(fields["eph"], validate=True)
             ct = base64.b64decode(fields["ct"], validate=True)
-            box = self.me.public.box_key
-            key = _body_key(self.me.exchange(eph_pub), eph_pub, box)
-            plaintext = ChaCha20Poly1305(key).decrypt(_NONCE, ct, _header(fields))
-            return json.loads(plaintext)["body"]
-        except (ValueError, KeyError, TypeError, InvalidTag, RecursionError) as e:
+            peer_eph = X25519PublicKey.from_public_bytes(eph_pub)
+        except ValueError as e:
             raise EnvelopeError("cannot decrypt") from e
+        header = _header(fields)
+        candidates: list[tuple[bytes | None, X25519PrivateKey | None]] = [
+            *self._session_keys.items(),
+            (None, None),  # the long-term key
+        ]
+        for used, private in candidates:
+            try:
+                if private is None:
+                    shared, box = self.me.exchange(eph_pub), self.me.public.box_key
+                else:
+                    shared, box = private.exchange(peer_eph), used or b""
+                key = _body_key(shared, eph_pub, box)
+                plaintext = ChaCha20Poly1305(key).decrypt(_NONCE, ct, header)
+            except (ValueError, InvalidTag):
+                continue
+            try:
+                return json.loads(plaintext)["body"], used
+            except (ValueError, KeyError, TypeError, RecursionError) as e:
+                raise EnvelopeError("cannot decrypt") from e
+        raise EnvelopeError("cannot decrypt")

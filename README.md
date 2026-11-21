@@ -168,6 +168,7 @@ more.
 | Replays after you restart the app | Sequence numbers survive restarts (time-based sender, persistent or start-window receiver) |
 | Replays an old message much later | Timestamps outside ±30 s are refused |
 | Sends junk to crash your parser | Strict validation; everything becomes `EnvelopeError` |
+| Steals a device's keys later and decrypts what it recorded | Forward secrecy: `Host` / `Device` use session keys that live only in memory and change every 10 minutes |
 | Sends huge or deeply nested packets | Size limit (1 MiB by default) and nesting checks before any parsing work |
 
 Also: fully typed (mypy strict), one required dependency

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Forward secrecy** for `Host` / `Device`: messages are encrypted to short-lived session
+  keys that exist only in memory, are replaced every 10 minutes and deleted after one more
+  period, so a seed stolen later can't decrypt recorded messages. Peers exchange session
+  keys inside signed, encrypted control messages; a message sealed to a key the receiver
+  no longer has (after a restart) is resent to its new key. Works with peers on 1.2 and
+  older, which keep using the long-term key.
+- `Sealer.seal(..., box_key=...)`, `Opener.add_session_key()`, `Opener.remove_session_key()`
+  and `Opener.open_detailed()` let the building blocks use session keys too.
 - Homepage at https://tonyd365.github.io/lanpair/ (`site/`, deployed by GitHub Pages), and
   Documentation, Source, Issues and Changelog links on PyPI.
 
