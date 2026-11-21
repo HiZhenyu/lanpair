@@ -216,6 +216,11 @@ class _Node:
         for attempt in range(20):
             udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if os.name != "nt":
+                # Rebind right after a restart even while closed connections linger in
+                # TIME_WAIT on this port. (POSIX: still only one listener per port. On
+                # Windows this option would let others take the port, and isn't needed.)
+                tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 udp.bind((bind, wanted))
                 tcp.bind((bind, udp.getsockname()[1]))

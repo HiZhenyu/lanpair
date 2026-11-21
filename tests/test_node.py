@@ -274,3 +274,38 @@ def test_saved_port_taken_falls_back_to_a_free_one(tmp_path):
         host3.close()
     finally:
         squatter.close()
+
+
+def test_port_kept_after_tcp_traffic(pair, tmp_path):
+    host, dev = pair
+    dev.send("x" * 20_000)  # over TCP: the host closes the connection (TIME_WAIT on its port)
+    assert host.receive(timeout=3) is not None
+    port, identity = host.port, host.identity
+    host.close()
+    host2 = make(Host, "desk", tmp_path, identity=identity)
+    try:
+        assert host2.port == port
+        dev.send("after restart")
+        assert host2.receive(timeout=3).body == "after restart"
+    finally:
+        host2.close()
+
+
+def test_port_kept_after_rejected_tcp_frames(pair, tmp_path):
+    import socket
+    import struct
+
+    host, dev = pair
+    # The host rejects these and closes first, leaving TIME_WAIT on its own port.
+    for _ in range(3):
+        c = socket.create_connection(("127.0.0.1", host.port))
+        c.sendall(struct.pack(">I", 50_000_000))
+        time.sleep(0.2)  # let the host close before we do
+        c.close()
+    port, identity = host.port, host.identity
+    host.close()
+    host2 = make(Host, "desk", tmp_path, identity=identity)
+    try:
+        assert host2.port == port
+    finally:
+        host2.close()

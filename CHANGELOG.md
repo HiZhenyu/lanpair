@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-11-21)
 
 - `Host` / `Device` send messages of any size up to 1 MiB: those too big for one UDP
   datagram (over about 6 KB) go over a short TCP connection to the peer's port (the same
   number as its UDP port), with the same checks. TCP connections are limited to 16 at a
   time and 5 seconds each, and oversized frames are refused before they are read.
+  The TCP listener can be rebound right after a restart (`SO_REUSEADDR` on POSIX), so a
+  node keeps its port even after it closed connections itself.
+- README: a demo GIF, and host / device examples you can run as they are.
+- `e2e/` also runs `Host` / `Device` across separate environments, with pairing and
+  message attacks.
 
 ## 1.1.0 (2026-11-21)
 

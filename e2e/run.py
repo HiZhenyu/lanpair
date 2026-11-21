@@ -1,6 +1,7 @@
 """Orchestrates the simulated LAN: 4 isolated venvs + a bridge hub, two phases, checks."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -120,6 +121,9 @@ def highlevel():
     h, rc_h = collect(host, 60)
     v, rc_v = collect(dev, 60)
     check(rc_h == rc_v == 0, "[restart] host and device exited cleanly")
+    if os.environ.get("E2E_DEBUG"):
+        print("     host:", h)
+        print("     device:", v)
     check(not any(e["event"] == "paired" for e in h + v), "[restart] no pairing needed")
     check([e["ok"] for e in v if e["event"] == "echo"] == [True], "[restart] messages still flow")
 
