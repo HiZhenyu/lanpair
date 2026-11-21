@@ -42,9 +42,14 @@ screens during pairing. Especially welcome:
 
 ## Known limits
 
-- **No forward secrecy for the receiver**: bodies are encrypted with a fresh sender key, but
-  someone who later steals a receiver's seed can decrypt messages they recorded earlier.
-  Message sizes and who talks to whom stay visible on the network.
+- **Forward secrecy has a window.** `Host` and `Device` (1.3+) encrypt to short-lived session
+  keys that live only in memory and are replaced every 10 minutes (the previous one is kept
+  for one more period). Someone who steals a device's seed later cannot decrypt recorded
+  messages, except those of the last ~20 minutes if they take the running device itself.
+  Control messages that carry session keys, and messages to peers on lanpair ≤ 1.2, use the
+  long-term key. The low-level `Sealer` / `Opener` give forward secrecy only if you use
+  session keys yourself (`Opener.add_session_key`, `Sealer.seal(..., box_key=...)`).
+- **Metadata is visible**: message sizes and who talks to whom stay visible on the network.
 - **Pairing offers can be locked by guessing**: anyone on the network can send five wrong
   answers and lock an open offer (they cannot pair or learn the secret). Make a new offer.
 - **Addresses follow authenticated messages**: an attacker who can delay a device's packet

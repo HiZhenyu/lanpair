@@ -46,8 +46,19 @@ were meant for it, and are not replays.
 5. **Confidentiality.** Each identity also has an X25519 key, derived from the same seed
    with HKDF. Every body is encrypted to the recipient's X25519 key with a fresh
    ephemeral key (HKDF-SHA256, ChaCha20-Poly1305); the header is the AEAD associated data
-   and the signature covers the ciphertext. Envelope version 2. Limit: no forward secrecy
-   against a later theft of the receiver's seed; a Noise session could add it later.
+   and the signature covers the ciphertext. Envelope version 2.
+6. **Forward secrecy (1.3).** Each `Host` / `Device` also holds short-lived X25519
+   *session keys*, generated in memory and never stored. It tells every peer its current
+   session public key inside sealed, signed control messages (`hello`, `paired`, `key`),
+   and peers encrypt to that key instead of the long-term one (same envelope; the
+   receiver tries its session keys, then its long-term key). A new session key starts
+   every 10 minutes and the previous one is kept for one more period, then deleted:
+   messages sealed to a deleted key can't be decrypted again, not even with the seed.
+   A message that arrives sealed to a key the receiver no longer has (it restarted, or
+   missed a `key` message) is signed but undecryptable; the receiver answers with its new
+   key and the message's sequence number, and the sender seals that message again to the
+   new key (senders keep their last 16 messages per peer for 60 s). Peers on 1.2 or older
+   never announce a session key, so they keep getting the long-term key.
 
 ## Open questions
 
