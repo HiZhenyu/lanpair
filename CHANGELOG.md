@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `Host` / `Device` send messages of any size up to 1 MiB: those too big for one UDP
+  datagram (over about 6 KB) go over a short TCP connection to the peer's port (the same
+  number as its UDP port), with the same checks. TCP connections are limited to 16 at a
+  time and 5 seconds each, and oversized frames are refused before they are read.
+
 ## 1.1.0 (2026-11-21)
 
 - `Host` and `Device`: the high-level API. UDP transport, QR-code pairing, mDNS

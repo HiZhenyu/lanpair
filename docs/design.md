@@ -65,4 +65,4 @@ were meant for it, and are not replays.
 | QR pairing | done, tested |
 | PAKE code pairing | todo |
 | Encrypted message bodies | done, tested |
-| `Host` / `Device` high-level API (UDP) | done, tested |
+| `Host` / `Device` high-level API (UDP, TCP for large messages) | done, tested |
