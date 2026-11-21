@@ -31,4 +31,4 @@ __all__ = [
     "SeqStore",
     "load_or_create_identity",
 ]
-__version__ = "1.2.0"
+__version__ = "1.3.0"

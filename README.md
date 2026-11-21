@@ -7,7 +7,7 @@
   <a href="https://github.com/TonyD365/lanpair/actions/workflows/security.yml"><img src="https://github.com/TonyD365/lanpair/actions/workflows/security.yml/badge.svg" alt="Security"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/TonyD365/lanpair"><img src="https://api.scorecard.dev/projects/github.com/TonyD365/lanpair/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://www.bestpractices.dev/projects/16988"><img src="https://www.bestpractices.dev/projects/16988/badge" alt="OpenSSF Best Practices: passing"></a>
-  <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/v/lanpair" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/v/lanpair?cacheSeconds=3600" alt="PyPI version"></a>
   <a href="https://pypi.org/project/lanpair/"><img src="https://img.shields.io/pypi/pyversions/lanpair" alt="Python versions"></a>
   <img src="https://img.shields.io/badge/typed-mypy%20strict-informational" alt="Typed, mypy strict">
   <a href="https://github.com/TonyD365/lanpair/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
@@ -173,7 +173,7 @@ more.
 
 Also: fully typed (mypy strict), one required dependency
 ([`cryptography`](https://cryptography.io)), tested on Linux, macOS and Windows with
-Python 3.10 to 3.13, property-tested with Hypothesis, and fuzzed with Atheris on every
+Python 3.10 to 3.15, property-tested with Hypothesis, and fuzzed with Atheris on every
 change. Releases are also checked in a simulated LAN ([`e2e/`](https://github.com/TonyD365/lanpair/tree/main/e2e)) with an attacker
 node that sniffs, replays, tampers, redirects and forges traffic.
 
