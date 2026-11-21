@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="lanpair: pair once, then every message is signed, encrypted and replay-proof on your LAN" width="760">
+  <img src="https://raw.githubusercontent.com/TonyD365/lanpair/main/docs/assets/banner.svg" alt="lanpair: pair once, then every message is signed, encrypted and replay-proof on your LAN" width="760">
 </p>
 
 <p align="center">
@@ -8,7 +8,7 @@
   <a href="https://scorecard.dev/viewer/?uri=github.com/TonyD365/lanpair"><img src="https://api.scorecard.dev/projects/github.com/TonyD365/lanpair/badge" alt="OpenSSF Scorecard"></a>
   <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue" alt="Python 3.10 to 3.13">
   <img src="https://img.shields.io/badge/typed-mypy%20strict-informational" alt="Typed, mypy strict">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/TonyD365/lanpair/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ handling and replay windows: a week of security work for a side feature.
 encrypted to its recipient, signed by its sender and checked for replay before your code
 ever sees it.
 
-> **Status: early development (0.0.x).** The cryptographic core works and is tested;
+> **Status: early development (0.x).** The cryptographic core works and is tested;
 > discovery, pairing and the high-level API are being built. The API may change, and there
 > has been no external security review yet. Don't protect anything valuable with it yet.
 
@@ -111,7 +111,7 @@ sequenceDiagram
 
 One 32-byte seed per device gives both its Ed25519 signing key and its X25519 encryption
 key. The full threat model, the reasoning behind each layer, and the known limits are in
-[docs/design.md](docs/design.md).
+[docs/design.md](https://github.com/TonyD365/lanpair/blob/main/docs/design.md).
 
 ## Where it's going
 
@@ -137,7 +137,7 @@ host.send("room-3", {"type": "close"})
 | QR code pairing | 🔜 |
 | 6-digit code pairing with a PAKE | 🔜 |
 | `Host` / `Device` API | 🔜 |
-| Published on PyPI | 🔜 |
+| Published on PyPI | ✅ 0.1.0 |
 
 Want to help with one of these? See the [open issues](https://github.com/TonyD365/lanpair/issues).
 
@@ -153,17 +153,15 @@ Want to help with one of these? See the [open issues](https://github.com/TonyD36
 
 ## Install
 
-Not on PyPI yet. Until the first release:
-
 ```bash
-pip install "git+https://github.com/TonyD365/lanpair"
+pip install lanpair
 ```
 
 ## Contributing
 
 Bug reports, ideas and pull requests are welcome. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md). Found a security issue? Please report it privately as
-described in [SECURITY.md](SECURITY.md), not in a public issue.
+[CONTRIBUTING.md](https://github.com/TonyD365/lanpair/blob/main/CONTRIBUTING.md). Found a security issue? Please report it privately as
+described in [SECURITY.md](https://github.com/TonyD365/lanpair/blob/main/SECURITY.md), not in a public issue.
 
 ```bash
 git clone https://github.com/TonyD365/lanpair && cd lanpair
@@ -173,4 +171,4 @@ pytest && ruff check . && mypy src
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/TonyD365/lanpair/blob/main/LICENSE)
