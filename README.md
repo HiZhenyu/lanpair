@@ -51,19 +51,32 @@ pip install "lanpair[all]"
 ```
 
 ```python
-# On the host (a front desk, a hub)        # On the device (a room PC, a Pi)
-from lanpair import Host                    from lanpair import Device
+# host.py: a front desk, a hub
+from lanpair import Host
 
-host = Host("Front desk")                   dev = Device("Room 3")
-host.start()                                dev.start()
-host.pairing_offer().print_qr()             dev.pair(scanned_text)   # once, ever
-for msg in host.messages():                 dev.send({"type": "checkout"})
-    print(msg.sender.name, msg.body)        for msg in dev.messages():
-                                                handle(msg.body)
-host.send(device_id, {"type": "close"})
+with Host("Front desk") as host:
+    if not host.devices:  # first run: show a QR code and wait for a device
+        host.pairing_offer().print_qr()
+        host.wait_for_pairing(timeout=300)
+    for msg in host.messages():  # every message is already verified
+        print(msg.sender.name, msg.body)
+        host.send(msg.sender.device_id, {"type": "ok"})
 ```
 
-That is the whole setup. Behind it:
+```python
+# device.py: a room PC, a Raspberry Pi
+from lanpair import Device
+
+with Device("Room 3") as dev:
+    if dev.host is None:  # first run: pair with the scanned QR code
+        dev.pair(input("Scanned code: "))
+    dev.send({"type": "checkout"})
+    for msg in dev.messages():
+        print(msg.body)
+```
+
+That is the whole setup: pairing happens once, and both sides remember each other across
+restarts. Behind it:
 
 - **Pairing by QR code.** The code carries the host's keys and a one-time secret. The
   device proves it scanned the code; nobody on the network can join or impersonate the
