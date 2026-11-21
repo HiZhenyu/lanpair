@@ -41,6 +41,7 @@ screens during pairing. Especially welcome:
 
 ## Known limits (pre-1.0)
 
-- **Message bodies are signed, not encrypted yet**: anyone on the network can read them. An
-  encrypted channel is on the roadmap.
+- **No forward secrecy for the receiver**: bodies are encrypted with a fresh sender key, but
+  someone who later steals a receiver's seed can decrypt messages they recorded earlier.
+  Message sizes and who talks to whom stay visible on the network.
 - **No external security review yet.** One is planned before 1.0.
