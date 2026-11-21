@@ -7,6 +7,9 @@
   the LAN could crash a receive loop that only catches `EnvelopeError`. It is now rejected
   as malformed, and envelopes over `Opener.max_size` (1 MiB by default) are refused before
   parsing. Found by the simulated-network test.
+- `load_or_create_identity()` keeps the device's seed in the OS key store (macOS Keychain,
+  Windows Credential Manager, Secret Service), with `load_identity`, `save_identity` and
+  `delete_identity` in `lanpair.keystore`. Optional: `pip install "lanpair[keyring]"`.
 
 ## 0.1.0 (2026-11-21)
 
