@@ -40,6 +40,17 @@ screens during pairing. Especially welcome:
 - a way to pair without seeing the QR code or the short code;
 - key material showing up anywhere outside the OS key store.
 
+## Verifying a release
+
+Releases are built by GitHub Actions and uploaded to PyPI with trusted publishing (no
+tokens). From 1.3, each GitHub release also carries the wheel and source archive with
+signed build provenance (SLSA, via Sigstore). To check that a file was built from this
+repository by its release workflow:
+
+```bash
+gh attestation verify lanpair-1.3.0-py3-none-any.whl -R TonyD365/lanpair
+```
+
 ## Known limits
 
 - **No forward secrecy for the receiver**: bodies are encrypted with a fresh sender key, but

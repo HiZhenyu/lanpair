@@ -1,4 +1,4 @@
-# Known vulnerabilities in the Python dependencies, and CodeQL's code scanning. On pull requests, main, and every two days.
+# Known vulnerabilities in the Python dependencies, and CodeQL's code scanning. On every pull request, main, and every two days.
 # On main and in the scheduled scan, a finding opens a "Security report" issue (or adds to the open
 # one), and the issue closes itself once everything is clean again. A pull request whose
 # scan fails gets the "security" label until it passes.
@@ -7,10 +7,7 @@ name: Security
 on:
   push:
     branches: [main]
-  pull_request:
-    # A pull request that only changes documentation skips the tests and scans (main
-    # still runs everything after the merge).
-    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+  pull_request: # every pull request, documentation too, so every commit on main was scanned
   schedule:
     - cron: "41 5 */2 * *" # every two days
   workflow_dispatch:
