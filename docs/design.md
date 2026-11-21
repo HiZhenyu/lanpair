@@ -55,7 +55,7 @@ were meant for it, and are not replays.
 | Identity + signed envelopes | done, tested |
 | Replay protection across restarts | done, tested |
 | Key storage via OS key store | todo |
-| mDNS discovery | todo (port from YTKTV) |
+| mDNS discovery | done, tested (`lanpair[discovery]`) |
 | QR pairing | todo |
 | PAKE code pairing | todo |
 | Encrypted message bodies | done, tested |

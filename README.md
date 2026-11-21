@@ -70,6 +70,20 @@ assert peer == desk.public and body["type"] == "close"
 Without a store, `Opener` keeps its memory in RAM and, to stay replay-safe, refuses
 messages for the first 30 seconds after it starts.
 
+Find paired devices on the network by id, so changing IP addresses don't matter:
+
+```python
+# pip install "lanpair[discovery]"
+from lanpair.discovery import Announcer, find
+
+with Announcer(me.public, "Room 3", port=8765):  # on the device
+    ...
+
+room3 = find(room3_id)  # on the desk: FoundDevice(..., address="192.168.1.23:8765") or None
+```
+
+Discovery is only a hint about addresses; it never decides who is trusted.
+
 What an eavesdropper sees on the network: who is talking to whom and how much, nothing
 more.
 
@@ -133,7 +147,7 @@ host.send("room-3", {"type": "close"})
 | Identity, signed + encrypted envelopes | ✅ done |
 | Replay protection across restarts | ✅ done |
 | Keys in the OS key store (Keychain, Credential Manager, Secret Service) | 🔜 next |
-| mDNS / zeroconf discovery | 🔜 |
+| mDNS / zeroconf discovery | ✅ done |
 | QR code pairing | 🔜 |
 | 6-digit code pairing with a PAKE | 🔜 |
 | `Host` / `Device` API | 🔜 |
