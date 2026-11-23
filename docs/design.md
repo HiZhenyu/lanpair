@@ -60,6 +60,14 @@ were meant for it, and are not replays.
    new key (senders keep their last 16 messages per peer for 60 s). Peers on 1.2 or older
    never announce a session key, so they keep getting the long-term key.
 
+7. **Delivery (unreleased).** `ack=True`, `request()` and `broadcast(ack=True)` give each
+   message a random id inside the encrypted body. Each retry is sealed again with a new
+   sequence number; the receiver remembers the last 256 ids per peer, delivers an id once,
+   and resends a cached reply if the answer was lost.
+8. **Pairing code (optional).** With `confirm=`, both sides derive a 6-digit code with
+   HMAC-SHA256 over both public identities, keyed by the one-time secret. Pairing completes
+   only if the callback returns True.
+
 ## Open questions
 
 - Mobile clients: a small web page or app speaking the same protocol.

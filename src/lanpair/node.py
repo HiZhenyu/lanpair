@@ -20,12 +20,15 @@ import json
 import os
 import queue
 import re
+import secrets
 import socket
 import struct
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections import OrderedDict
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
@@ -34,7 +37,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from .envelope import DEFAULT_MAX_SIZE, EnvelopeError, JsonFileSeqStore, Opener, Sealer
 from .identity import Identity, PublicIdentity
-from .pairing import PairingError, PairingOffer, PairingSession, make_request
+from .pairing import PairingError, PairingOffer, PairingSession, make_request, pairing_code
 
 _MSG = b"M"  # an envelope
 _PAIR = b"P"  # a pairing request
@@ -49,6 +52,9 @@ _SESSION_KEEP = 2  # session keys kept: the current one and the one before it
 _REANNOUNCE = 10.0  # seconds between telling one peer our session key again
 _OUTBOX_KEEP = 16  # recent messages kept per peer, to resend if it couldn't decrypt one
 _OUTBOX_AGE = 60.0  # seconds they are kept
+_SEEN_KEEP = 256  # acknowledged message ids remembered per peer, to drop retransmissions
+_CONFIRM_WAIT = 120.0  # seconds a device waits while the host's user checks the code
+Confirm = Callable[[str], bool]
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,29 @@ class Message(NamedTuple):
 
     sender: PeerInfo
     body: Any
+
+
+class Request(Message):
+    """A message whose sender is waiting for an answer: pass it to ``reply()``."""
+
+    request_id: str
+
+    def __new__(cls, sender: PeerInfo, body: Any, request_id: str) -> Request:
+        self = super().__new__(cls, sender, body)
+        self.request_id = request_id
+        return self
+
+
+class DeliveryError(TimeoutError):
+    """The peer did not acknowledge or answer in time."""
+
+
+class _Pending:
+    def __init__(self, device_id: str) -> None:
+        self.device_id = device_id
+        self.acked = threading.Event()
+        self.replied = threading.Event()
+        self.reply: Any = None
 
 
 def _slug(name: str) -> str:
@@ -220,6 +249,9 @@ class _Node:
         # to a session key it lost in a restart) can be sealed again to its new key.
         self._outbox: dict[str, dict[int, tuple[float, dict[str, Any]]]] = {}
         self._outbox_lock = threading.Lock()
+        self._pending_sends: dict[str, _Pending] = {}
+        self._seen: dict[str, OrderedDict[str, tuple[bool, Any]]] = {}
+        self._delivery_lock = threading.Lock()
         self._session_lock = threading.Lock()
         self._rotate_session()
 
@@ -514,9 +546,112 @@ class _Node:
         if peer.device_id in self._peer_sessions and used != self._session_key:
             self._tell_session(peer)
         if "msg" in body:
-            self._inbox.put(Message(peer, body["msg"]))
+            self._on_message(peer, body)
+        elif body.get("lanpair") == "ack":
+            self._on_ack(peer, body)
+        elif body.get("lanpair") == "reply":
+            self._on_reply(peer, body)
         elif "lanpair" in body:
             self._on_control(peer, body)
+
+    def _on_message(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        message_id = body.get("id")
+        if not isinstance(message_id, str) or not 0 < len(message_id) <= 32:
+            self._inbox.put(Message(peer, body["msg"]))
+            return
+        with self._delivery_lock:
+            seen = self._seen.setdefault(peer.device_id, OrderedDict())
+            previous = seen.get(message_id)
+            if previous is None:
+                seen[message_id] = (False, None)
+                while len(seen) > _SEEN_KEEP:
+                    seen.popitem(last=False)
+        if previous is None:
+            if body.get("req") is True:
+                self._inbox.put(Request(peer, body["msg"], message_id))
+            else:
+                self._inbox.put(Message(peer, body["msg"]))
+        self._send_quietly(peer, {"lanpair": "ack", "id": message_id})
+        if previous is not None and previous[0]:  # the answer was lost: send it again
+            answer = {"lanpair": "reply", "id": message_id, "body": previous[1]}
+            threading.Thread(target=self._send_quietly, args=(peer, answer), daemon=True).start()
+
+    def _on_ack(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        pending = self._pending_for(peer, body)
+        if pending is not None:
+            pending.acked.set()
+
+    def _on_reply(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        pending = self._pending_for(peer, body)
+        if pending is not None:
+            pending.reply = body.get("body")
+            pending.acked.set()
+            pending.replied.set()
+
+    def _pending_for(self, peer: PeerInfo, body: dict[str, Any]) -> _Pending | None:
+        message_id = body.get("id")
+        if not isinstance(message_id, str):
+            return None
+        with self._delivery_lock:
+            pending = self._pending_sends.get(message_id)
+        return pending if pending is not None and pending.device_id == peer.device_id else None
+
+    def _send_quietly(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        try:
+            self._send(peer, body)
+        except (OSError, LookupError, ValueError):
+            pass  # the sender retransmits if this was lost
+
+    def _deliver(
+        self, device_id: str, value: Any, timeout: float, retries: int, *, request: bool = False
+    ) -> Any:
+        """Send until acknowledged (and answered, for a request), or raise DeliveryError."""
+        if timeout <= 0 or retries < 0:
+            raise ValueError("timeout must be positive and retries not negative")
+        message_id = secrets.token_hex(8)
+        body: dict[str, Any] = {"msg": value, "id": message_id, "ack": True}
+        if request:
+            body["req"] = True
+        pending = _Pending(device_id)
+        with self._delivery_lock:
+            self._pending_sends[message_id] = pending
+        deadline = time.monotonic() + timeout
+        interval = timeout / (retries + 1)
+        try:
+            for _ in range(retries + 1):
+                peer = self._book.get(device_id)
+                if peer is None:
+                    raise LookupError(f"no paired device {device_id}")
+                try:
+                    self._send(peer, body)
+                except OSError:
+                    pass  # counts as a failed try
+                remaining = deadline - time.monotonic()
+                done = pending.replied if request else pending.acked  # a reply can be lost too
+                if remaining <= 0 or done.wait(min(interval, remaining)):
+                    break
+            if not pending.acked.is_set():
+                raise DeliveryError(f"{device_id} did not acknowledge within {timeout} s")
+            if not request:
+                return None
+            if not pending.replied.wait(max(0.0, deadline - time.monotonic())):
+                raise DeliveryError(f"{device_id} did not answer within {timeout} s")
+            return pending.reply
+        finally:
+            with self._delivery_lock:
+                self._pending_sends.pop(message_id, None)
+
+    def reply(self, request: Message, body: Any) -> None:
+        """Answer a message that came from ``request()``."""
+        if not isinstance(request, Request):
+            raise ValueError("this message is not a request")
+        peer = self._book.get(request.sender.device_id)
+        if peer is None:
+            raise LookupError(f"no paired device {request.sender.device_id}")
+        with self._delivery_lock:
+            seen = self._seen.setdefault(peer.device_id, OrderedDict())
+            seen[request.request_id] = (True, body)
+        self._send(peer, {"lanpair": "reply", "id": request.request_id, "body": body})
 
     def _reannounce_to_sender(self, payload: bytes) -> None:
         try:
@@ -586,6 +721,8 @@ class Host(_Node):
         super().__init__(name, **kwargs)
         self._session: PairingSession | None = None
         self._paired_events: queue.Queue[PeerInfo] = queue.Queue()
+        self._confirm: Confirm | None = None
+        self._confirming: dict[str, str] = {}  # device id -> waiting, accepted or refused
 
     @property
     def devices(self) -> list[PeerInfo]:
@@ -593,12 +730,19 @@ class Host(_Node):
         return self._book.all()
 
     def pairing_offer(
-        self, *, ttl: float = 300.0, max_attempts: int = 5, address: str | None = None
+        self,
+        *,
+        ttl: float = 300.0,
+        max_attempts: int = 5,
+        address: str | None = None,
+        confirm: Confirm | None = None,
     ) -> PairingOffer:
         """A new one-time offer to show as a QR code (``offer.print_qr()``, ``offer.to_uri()``).
 
         Valid for *ttl* seconds and for one device; it is locked after *max_attempts* wrong
-        answers. Making a new offer cancels the previous one.
+        answers. Making a new offer cancels the previous one. With *confirm*, the function
+        gets a short code (``"123-456"``) to compare with the device's, and the device is
+        paired only if it returns True.
         """
         offer = PairingOffer.create(
             self.identity.public,
@@ -608,6 +752,8 @@ class Host(_Node):
             app=self.app,
         )
         self._session = PairingSession(self.identity, offer, max_attempts=max_attempts)
+        self._confirm = confirm
+        self._confirming = {}
         return offer
 
     def wait_for_pairing(self, timeout: float | None = None) -> PeerInfo | None:
@@ -617,12 +763,53 @@ class Host(_Node):
         except queue.Empty:
             return None
 
-    def send(self, device_id: str, body: Any) -> None:
-        """Send *body* (any JSON value) to a paired device."""
+    def send(
+        self,
+        device_id: str,
+        body: Any,
+        *,
+        ack: bool = False,
+        timeout: float = 5.0,
+        retries: int = 3,
+    ) -> None:
+        """Send *body* (any JSON value) to a paired device.
+
+        With ``ack=True``, retry until the device confirms it, delivered once, or raise
+        :class:`DeliveryError` after *timeout* seconds.
+        """
         peer = self._book.get(device_id)
         if peer is None:
             raise LookupError(f"no paired device {device_id}")
-        self._send(peer, {"msg": body})
+        if ack:
+            self._deliver(device_id, body, timeout, retries)
+        else:
+            self._send(peer, {"msg": body})
+
+    def request(self, device_id: str, body: Any, *, timeout: float = 5.0, retries: int = 3) -> Any:
+        """Send *body* and return the device's ``reply()``, or raise DeliveryError."""
+        return self._deliver(device_id, body, timeout, retries, request=True)
+
+    def broadcast(
+        self, body: Any, *, ack: bool = False, timeout: float = 5.0, retries: int = 3
+    ) -> dict[str, bool]:
+        """Send *body* to every paired device; returns ``{device_id: succeeded}``.
+
+        Without *ack*, True means it was sent; with ``ack=True``, that the device confirmed it.
+        """
+
+        def one(peer: PeerInfo) -> bool:
+            try:
+                self.send(peer.device_id, body, ack=ack, timeout=timeout, retries=retries)
+            except (OSError, LookupError):
+                return False
+            return True
+
+        devices = self.devices
+        if not devices:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(16, len(devices))) as pool:
+            results = pool.map(one, devices)
+            return {d.device_id: ok for d, ok in zip(devices, results, strict=True)}
 
     def unpair(self, device_id: str) -> None:
         """Forget a device: nothing from it is accepted any more."""
@@ -634,12 +821,46 @@ class Host(_Node):
         if session is None:
             raise PairingError("no pairing offer is open")
         ident, name = session.accept(payload)
-        known = self._book.get(ident.device_id)
         peer = PeerInfo(ident.device_id, name, ident, source)
+        confirm = self._confirm
+        if confirm is None:
+            self._finish_pairing(peer)
+            return
+        state = self._confirming.get(ident.device_id)
+        if state == "accepted":
+            self._finish_pairing(peer)
+        elif state == "refused":
+            self._send_quietly(peer, {"lanpair": "pair-refused"})
+        else:
+            self._send_quietly(peer, {"lanpair": "pair-wait"})
+            if state is None:
+                self._confirming[ident.device_id] = "waiting"
+                code = pairing_code(session.offer, ident)
+                threading.Thread(
+                    target=self._ask_confirm, args=(peer, code, confirm), daemon=True
+                ).start()
+
+    def _ask_confirm(self, peer: PeerInfo, code: str, confirm: Confirm) -> None:
+        try:
+            accepted = confirm(code) is True
+        except Exception:
+            accepted = False
+        self._confirming[peer.device_id] = "accepted" if accepted else "refused"
+        if accepted:
+            self._finish_pairing(peer)
+        else:
+            self._send_quietly(peer, {"lanpair": "pair-refused"})
+
+    def _finish_pairing(self, peer: PeerInfo) -> None:
+        known = self._book.get(peer.device_id)
         self._add_peer(peer)
         self._send(peer, {"lanpair": "paired", "name": self.name, "session": self._session_field()})
         if known is None:
             self._paired_events.put(peer)
+
+    def _on_control(self, peer: PeerInfo, body: dict[str, Any]) -> None:
+        if body.get("lanpair") == "unpair":  # the device's user rejected the pairing code
+            self.unpair(peer.device_id)
 
 
 class Device(_Node):
@@ -654,6 +875,8 @@ class Device(_Node):
         super().__init__(name, **kwargs)
         self._confirmed = threading.Event()
         self._pending: str | None = None  # the host being paired with right now
+        self._host_waiting = threading.Event()
+        self._host_refused = threading.Event()
         self._host_id: str | None = None
         peers = self._book.all()
         if peers:
@@ -664,11 +887,19 @@ class Device(_Node):
         """The host this device is paired with, if any."""
         return self._book.get(self._host_id) if self._host_id else None
 
-    def pair(self, offer: str | PairingOffer, *, timeout: float = 10.0) -> PeerInfo:
+    def pair(
+        self,
+        offer: str | PairingOffer,
+        *,
+        timeout: float = 10.0,
+        confirm: Confirm | None = None,
+    ) -> PeerInfo:
         """Pair with the host whose QR code was scanned (the text, or a parsed offer).
 
         Returns the host. Raises :class:`PairingError` if the offer is invalid, expired or
-        for another app, or if the host does not confirm within *timeout* seconds.
+        for another app, or if the host does not confirm within *timeout* seconds. With
+        *confirm*, the function gets a short code (``"123-456"``) to compare with the host's;
+        unless it returns True, the pairing is undone.
         """
         if self._thread is None:
             raise PairingError("call start() before pair()")
@@ -683,11 +914,31 @@ class Device(_Node):
         self._add_peer(host)
         self._pending = host.device_id
         self._confirmed.clear()
-        attempts = max(1, int(timeout // 2))
-        for _ in range(attempts):
+        self._host_waiting.clear()
+        self._host_refused.clear()
+        deadline = time.monotonic() + timeout
+        extended = False
+        step = timeout / max(1, int(timeout // 2))
+        while time.monotonic() < deadline and not self._host_refused.is_set():
+            if self._host_waiting.is_set() and not extended:
+                extended = True  # the host's user is checking the code
+                deadline = time.monotonic() + _CONFIRM_WAIT
             request = make_request(self.identity, offer, self.name, self._sealer)
             self._sock.sendto(_PAIR + request, _split(offer.address))
-            if self._confirmed.wait(timeout / attempts):
+            if self._wait_for_host(min(step, max(0.0, deadline - time.monotonic()))):
+                if confirm is not None:
+                    try:
+                        accepted = confirm(pairing_code(offer, self.identity.public)) is True
+                    except Exception:
+                        accepted = False
+                    if not accepted:
+                        confirmed = self._book.get(host.device_id)
+                        if confirmed is not None:
+                            self._send_quietly(confirmed, {"lanpair": "unpair"})
+                        if previous is None or previous.device_id != host.device_id:
+                            self._book.remove(host.device_id)
+                            self._opener.remove_peer(host.device_id)
+                        raise PairingError("the pairing code was not confirmed")
                 if previous is not None and previous.device_id != host.device_id:
                     self._book.remove(previous.device_id)
                     self._opener.remove_peer(previous.device_id)
@@ -699,14 +950,37 @@ class Device(_Node):
         if previous is None or previous.device_id != host.device_id:
             self._book.remove(host.device_id)
             self._opener.remove_peer(host.device_id)
+        if self._host_refused.is_set():
+            raise PairingError("the host refused the pairing")
         raise PairingError("the host did not confirm the pairing")
 
-    def send(self, body: Any) -> None:
-        """Send *body* (any JSON value) to the host."""
+    def _wait_for_host(self, seconds: float) -> bool:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not self._host_refused.is_set():
+            if self._confirmed.wait(min(0.05, max(0.0, end - time.monotonic()))):
+                return True
+        return self._confirmed.is_set()
+
+    def send(self, body: Any, *, ack: bool = False, timeout: float = 5.0, retries: int = 3) -> None:
+        """Send *body* (any JSON value) to the host.
+
+        With ``ack=True``, retry until the host confirms it, delivered once, or raise
+        :class:`DeliveryError` after *timeout* seconds.
+        """
         host = self.host
         if host is None:
             raise LookupError("not paired with a host yet: call pair() first")
-        self._send(host, {"msg": body})
+        if ack:
+            self._deliver(host.device_id, body, timeout, retries)
+        else:
+            self._send(host, {"msg": body})
+
+    def request(self, body: Any, *, timeout: float = 5.0, retries: int = 3) -> Any:
+        """Send *body* and return the host's ``reply()``, or raise DeliveryError."""
+        host = self.host
+        if host is None:
+            raise LookupError("not paired with a host yet: call pair() first")
+        return self._deliver(host.device_id, body, timeout, retries, request=True)
 
     def unpair(self) -> None:
         """Forget the host."""
@@ -716,7 +990,11 @@ class Device(_Node):
             self._host_id = None
 
     def _on_control(self, peer: PeerInfo, body: dict[str, Any]) -> None:
-        if body.get("lanpair") == "paired" and peer.device_id == self._pending:
+        if peer.device_id == self._pending and body.get("lanpair") == "pair-wait":
+            self._host_waiting.set()
+        elif peer.device_id == self._pending and body.get("lanpair") == "pair-refused":
+            self._host_refused.set()
+        elif body.get("lanpair") == "paired" and peer.device_id == self._pending:
             name = body.get("name")
             if isinstance(name, str) and name:
                 self._book.put(PeerInfo(peer.device_id, name[:63], peer.identity, peer.address))

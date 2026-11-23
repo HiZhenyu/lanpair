@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Reliable delivery: `send(..., ack=True)` retries until the peer confirms, delivers once,
+  and raises `DeliveryError` on timeout.
+- `request()` / `reply()` for request and response, including recovery from a lost reply.
+- `Host.broadcast()` sends to every paired device and reports the result per device.
+- `AsyncHost` and `AsyncDevice` for asyncio.
+- Optional pairing code check: `confirm=` on `Host.pairing_offer()` and `Device.pair()`.
+
 ## 1.3.0 (2026-11-21)
 
 - **Forward secrecy** for `Host` / `Device`: messages are encrypted to short-lived session
