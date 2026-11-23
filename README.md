@@ -97,6 +97,21 @@ restarts. Behind it:
 - **Every message** encrypted, signed, bound to its recipient and replay-checked before
   `messages()` hands it to you.
 
+### When a message must arrive
+
+```python
+host.send(device_id, {"type": "close"}, ack=True)  # retries; raises DeliveryError if not confirmed
+state = host.request(device_id, {"type": "status"})  # waits for the device's reply
+results = host.broadcast({"type": "closing"}, ack=True)  # {device_id: True or False}
+
+msg = dev.receive()
+dev.reply(msg, {"state": "open"})  # answers a request
+```
+
+Retried messages are delivered once. For asyncio, use `AsyncHost` and `AsyncDevice`, with the
+same methods. To check a pairing by eye, pass `confirm=` to `pairing_offer()` and `pair()`:
+both sides get the same short code, and pairing stops unless your function returns True.
+
 ### Lower level: bring your own transport
 
 The building blocks under `Host` and `Device`. You choose the transport (TCP, WebSocket,

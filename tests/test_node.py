@@ -372,3 +372,166 @@ def test_works_with_a_peer_without_session_keys(pair):
     assert host.receive(timeout=3).body == "old style"
     host.send(dev.device_id, "reply")
     assert dev.receive(timeout=3).body == "reply"
+
+
+# --- reliable delivery, requests, broadcast, pairing code, asyncio ---------------------
+
+
+def test_ack_delivers_once_despite_lost_ack(pair):
+    host, dev = pair
+    real = dev._on_ack
+    dropped = []
+
+    def lose_first(peer, body):
+        if not dropped:
+            dropped.append(body)
+            return
+        real(peer, body)
+
+    dev._on_ack = lose_first
+    dev.send("close", ack=True, timeout=2, retries=3)
+    assert host.receive(timeout=1).body == "close"
+    assert host.receive(timeout=0.3) is None
+
+
+def test_ack_times_out_when_peer_is_gone(pair):
+    from lanpair import DeliveryError
+
+    host, dev = pair
+    host.close()
+    with pytest.raises(DeliveryError):
+        dev.send("close", ack=True, timeout=0.4, retries=1)
+
+
+def test_request_reply_both_ways(pair):
+    import threading
+
+    host, dev = pair
+
+    def answer(node):
+        msg = node.receive(timeout=3)
+        node.reply(msg, {"echo": msg.body})
+
+    threading.Thread(target=answer, args=(host,), daemon=True).start()
+    assert dev.request("ping", timeout=3) == {"echo": "ping"}
+    threading.Thread(target=answer, args=(dev,), daemon=True).start()
+    assert host.request(dev.device_id, "pong", timeout=3) == {"echo": "pong"}
+
+
+def test_lost_reply_is_sent_again_without_redelivery(pair):
+    import threading
+
+    host, dev = pair
+    real = dev._on_reply
+    lost = []
+
+    def lose_first(peer, body):
+        if not lost:
+            lost.append(body)
+            return
+        real(peer, body)
+
+    dev._on_reply = lose_first
+
+    def answer():
+        msg = host.receive(timeout=3)
+        host.reply(msg, "done")
+
+    threading.Thread(target=answer, daemon=True).start()
+    assert dev.request("work", timeout=3, retries=5) == "done"
+    assert host.receive(timeout=0.3) is None
+
+
+def test_reply_needs_a_request(pair):
+    host, dev = pair
+    dev.send("plain")
+    msg = host.receive(timeout=2)
+    assert tuple(msg) == (msg.sender, "plain")
+    with pytest.raises(ValueError):
+        host.reply(msg, "x")
+
+
+def test_broadcast_reports_each_device(pair, tmp_path):
+    host, dev = pair
+    other = make(Device, "room4", tmp_path)
+    other.pair(host.pairing_offer(address=f"127.0.0.1:{host.port}"), timeout=3)
+    try:
+        result = host.broadcast("closing", ack=True, timeout=2)
+        assert result == {dev.device_id: True, other.device_id: True}
+        assert dev.receive(timeout=1).body == "closing"
+        assert other.receive(timeout=1).body == "closing"
+        other_id = other.device_id
+        other.close()
+        assert host.broadcast("again", ack=True, timeout=0.4, retries=1)[other_id] is False
+    finally:
+        other.close()
+
+
+def test_pairing_code_matches_on_both_sides(tmp_path):
+    host = make(Host, "desk", tmp_path)
+    dev = make(Device, "room3", tmp_path)
+    codes = []
+    try:
+        offer = host.pairing_offer(
+            address=f"127.0.0.1:{host.port}", confirm=lambda c: codes.append(c) or True
+        )
+        dev.pair(offer.to_uri(), timeout=4, confirm=lambda c: codes.append(c) or True)
+        assert len(codes) == 2 and codes[0] == codes[1] and len(codes[0]) == 7
+        assert host.wait_for_pairing(timeout=2) is not None
+    finally:
+        host.close()
+        dev.close()
+
+
+def test_host_can_reject_the_pairing_code(tmp_path):
+    host = make(Host, "desk", tmp_path)
+    dev = make(Device, "room3", tmp_path)
+    try:
+        offer = host.pairing_offer(address=f"127.0.0.1:{host.port}", confirm=lambda c: False)
+        with pytest.raises(PairingError, match="refused"):
+            dev.pair(offer.to_uri(), timeout=4)
+        assert host.devices == [] and dev.host is None
+    finally:
+        host.close()
+        dev.close()
+
+
+def test_device_can_reject_the_pairing_code(tmp_path):
+    host = make(Host, "desk", tmp_path)
+    dev = make(Device, "room3", tmp_path)
+    try:
+        offer = host.pairing_offer(address=f"127.0.0.1:{host.port}")
+        with pytest.raises(PairingError, match="not confirmed"):
+            dev.pair(offer.to_uri(), timeout=4, confirm=lambda c: False)
+        assert dev.host is None
+        assert wait(lambda: host.devices == [])
+    finally:
+        host.close()
+        dev.close()
+
+
+def test_asyncio_api(tmp_path):
+    import asyncio
+
+    from lanpair import AsyncDevice, AsyncHost
+
+    kw = {"announce": False, "bind": "127.0.0.1", "app": "lanpair-test"}
+
+    async def main():
+        host = AsyncHost("desk", identity=Identity.generate(), state_dir=tmp_path / "h", **kw)
+        dev = AsyncDevice("room", identity=Identity.generate(), state_dir=tmp_path / "d", **kw)
+        async with host, dev:
+            offer = host.pairing_offer(address=f"127.0.0.1:{host.port}")
+            await dev.pair(offer.to_uri(), timeout=4)
+
+            async def serve():
+                msg = await host.receive(timeout=3)
+                await host.reply(msg, msg.body + 1)
+
+            task = asyncio.create_task(serve())
+            assert await dev.request(41, timeout=3) == 42
+            await task
+            await host.broadcast("hi", ack=True, timeout=2)
+            assert (await dev.receive(timeout=2)).body == "hi"
+
+    asyncio.run(main())

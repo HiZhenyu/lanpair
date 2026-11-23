@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import os
@@ -134,6 +135,14 @@ class PairingOffer:
     def print_qr(self) -> None:
         """Print the QR code in the terminal, to scan from the screen."""
         self.qr().terminal(compact=True)
+
+
+def pairing_code(offer: PairingOffer, device: PublicIdentity) -> str:
+    """A short code both sides can show, to check by eye that they paired with each other."""
+    data = b"lanpair pairing code v1" + offer.host.to_bytes() + device.to_bytes()
+    digest = hmac.new(offer.secret, data, hashlib.sha256).digest()
+    number = int.from_bytes(digest[:8], "big") % 1_000_000
+    return f"{number // 1000:03d}-{number % 1000:03d}"
 
 
 # --- wire format ------------------------------------------------------------------------
